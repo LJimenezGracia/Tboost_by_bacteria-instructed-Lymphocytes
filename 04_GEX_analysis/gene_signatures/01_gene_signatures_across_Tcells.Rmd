@@ -1,0 +1,442 @@
+---
+title: "Computing gene signatures on T Lymphocytes"
+author: "Laura Jiménez Gracia"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+```
+
+# Introduction
+
+# Pre-processing
+## Libraries
+```{r warning = FALSE, message = FALSE}
+library(tidyverse)
+library(Seurat)
+library(UCell)
+library(pheatmap)
+```
+
+## Parameters
+Here we will define and load objects and functions that will be used throughout the document.
+```{r}
+# Paths
+path_project_metadata <- here::here("01_cellranger_mapping/data/FIXnCUT_metadata.csv")
+path_r_objects_in <- here::here("03_clustering_annotation/results/R_objects")
+path_r_results <- here::here("04_GEX_analysis/gene_signatures/results")
+
+# Pseudobulk function (equivalent to DecoupleR)
+get_pseudobulk <- function(seurat_obj, sample_col = "individual", groups_col = "cell_type", min_cells = 0, min_counts = 0) {
+  # Extract raw integer counts
+  counts_matrix <- GetAssayData(seurat_obj, slot = "counts")
+  # Extract metadata
+  metadata <- seurat_obj@meta.data
+  
+  # Create a combined group identifier
+  metadata$group_id <- paste(metadata[[sample_col]], metadata[[groups_col]], sep = "_")
+  
+  # Group cells by the combined identifier
+  cell_groups <- split(rownames(metadata), metadata$group_id)
+  # Aggregate counts by summing across all cells in each group
+  pseudobulk_counts <- sapply(cell_groups, function(cells) {
+    if (length(cells) >= min_cells) {
+      summed_counts <- Matrix::rowSums(counts_matrix[, cells, drop = FALSE])
+      if (sum(summed_counts) >= min_counts) {
+        return(summed_counts)
+      }
+    }
+    return(rep(0, nrow(counts_matrix)))
+  })
+  # Convert to matrix format
+  pseudobulk_counts <- as.matrix(pseudobulk_counts)
+  # Remove empty columns
+  valid_cols <- colSums(pseudobulk_counts) > 0
+  pseudobulk_counts <- pseudobulk_counts[, valid_cols, drop = FALSE]
+  
+  # Create sample-level metadata
+  sample_metadata <- unique(metadata[, c(sample_col, groups_col), drop = FALSE])
+  sample_metadata$group_id <- paste(sample_metadata[[sample_col]], sample_metadata[[groups_col]], sep = "_")
+  rownames(sample_metadata) <- sample_metadata$group_id
+  # Filter metadata to match valid columns
+  sample_metadata <- sample_metadata[valid_cols, , drop = FALSE]
+  
+  # Create a new Seurat object with pseudobulk data
+  pseudobulk_seurat <- CreateSeuratObject(
+    counts = pseudobulk_counts,
+    meta.data = sample_metadata
+  )
+  
+  return(pseudobulk_seurat)
+}
+```
+
+```{r}
+# Load data
+seurat_obj <- readRDS(paste0(path_r_objects_in, "/VEIGAEST_clustering_annotation_full_cleaned.rds"))
+seurat_obj
+```
+
+# Pseudobulking across T Lymphocytes
+```{r}
+# Subsetting on T Lymphocytes
+seurat_obj_T <- subset(seurat_obj, subset = cell_lineages == "T Lymphocytes")
+seurat_obj_T
+rm(seurat_obj)
+
+seurat_obj_T$cell_types <- as.factor(as.character(seurat_obj_T$cell_types))
+
+# Pseudobulk
+seurat_obj_T_pseudo <- get_pseudobulk(seurat_obj_T, sample_col = "treatment", groups_col = "cell_types", min_cells = 0, min_counts = 0)
+seurat_obj_T_pseudo
+
+
+Tcell_types_order <- c("Stem-like CD8 T cells",
+                      "Effector CD8 T cells",
+                      "Effector Memory CD8 T cells",
+                      "IFN-responder CD8 T cells",
+                      "Exhausted CD8 T cells",
+                      "Cycling CD8 T cells", 
+                      "Exhausted CD4 T cells",
+                      "Tregs", "Cycling Tregs", 
+                      "Th",
+                      "MAIT", 
+                      "g/dv2-17 cells",
+                      "NKT cells"
+                      )
+
+seurat_obj_T_pseudo$cell_types <- factor(x = seurat_obj_T_pseudo$cell_types,
+                                        levels = Tcell_types_order)
+
+# Normalization
+seurat_obj_T_pseudo <- NormalizeData(seurat_obj_T_pseudo, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+
+# Computing gene signatures
+
+## In-house gene signatures
+```{r}
+bulkRNAseq_gene_signatures <- list(
+  "cell_cycle_arrest" = c("Cdkn1b", "Ccng2", "Cdkn2c", "Cdkn2d", "Cdkn1a", "Cdkn2b"),
+  "cell_cycle_progression" = c("Mcm5", "Cdk4", "Mcm6", "Ccnb1", "Mcm2", "Mcm4", "E2f1", "Cdk2", "Mcm3", "Mcm7", 
+                               "Ccnd2", "Cdk8", "Cdk11b", "Ccnd3", "Tfdp1", "Cdk16", "Cdk5", "Cdk19", "E2f2", "Ccnb2", "Cdk1"),
+  
+  "apoptosis" = c("Pmaip1", "Bak1", "Bax", "Bid", "Cflar", "Fas", "Bnip3", "Bcl2l11", "Bbc3"),
+  "cell_survival" = c("Birc5", "Sirt3", "Traf5", "Bcl2a1d", "Bcl2a1b", "Id2", "Traf2", "Bcl2l1", "Hmox1", "Tnfrsf4", "Bcl2", "Tnfrsf9", "Traf3"),
+  
+  "stemLike_phenotype" = c("Bhlhe40", "Myb", "Cxcl10", "Il7r", "Ccr7", "Ikzf2", "Foxo1", "Slamf6", "Lef1",
+                           "Bcl6", "Bach2", "Klf3", "Tcf7", "S1pr1", "Id3", "Klf2", "Sell"),
+  "quiescence" = c("Myb", "Il7r", "Ccr7", "Ikzf2", "Foxo1", "Slamf6", "Lef1", "Bcl6", "Bach2", "Klf3", "Tcf7", "S1pr1", "Id3", "Klf2", "Sell"),
+  "exhaustion" = c("Nfatc1", "Cd7", "Ctla4", "Cd101", "Pdcd1", "Nfil3", "Tox", "Xbp1", "Nr4a3",
+                   "Nr4a1", "Nr4a2", "Cd244a", "Havcr2", "Entpd1", "Cd160", "Cd38"),
+  
+  "Tc1_phenotype" = c("Fasl", "Gzmb", "Il2ra", "Ccl3", "Tnf", "Ifng", "Icos", "Prf1", "Cd69", "Prdm1", "Irf4", "Ccl4", "Tnfrsf8", 
+                      "Gzmg", "Gzmd", "Gzme", "Gzmf", "Tbx21", "Runx3", "Gzma", "Gzmk", "Eomes", "Batf", "Gzmc", "Itgal", "Cd44", "Ccl5"),
+  
+  "glucose_metabolism" = c("Hk2", "Pgm2", "Pdk3", "Eno3", "Bpgm", "Pdk2", "Ldhb", "Pgm2l1", "Pgam2", "Ldha", "Pfkp", 
+                           "Eno1", "Eno1b", "Slc2a1", "Scl16a3", "Pgam1", "Tpi1", "Pkm", "Hif1a", "Pfkm", "Aldoa", "Pfkfb3", 
+                           "Ipfk2", "Acss1", "Acss2", "Aldoc", "Gpi1", "Pgk1", "Pygl", "Slc2a3"),
+  "mitochondrial_metabolism" = c("Slc25a23", "Ndufaf1", "Nrf1", "Ndufb9", "Atp5o", "Ndufa9", "Ndufs8", "Fabp5", "Atp5b", "Ndufa2",
+                                 "Uqcr10", "Ndufa5", "Ptpmt1", "Ndufb7", "Uqcrq", "Ndufv1", "Cox6b2", "Ndufa4", "Cox5a", "Atp5k", 
+                                 "Cox7b", "Atp5l", "Atp5g3", "Ndufa12", "Ndufs6", "Ndufb3", "Ndufa1", "Emc8", "Cox6a1", "Mtch2",
+                                 "Sdhb", "Ndufaf2", "Ndufb6", "Ndufs1", "Atpaf2", "Atpif1", "Ndufaf4")
+)
+```
+
+
+### Genes
+```{r fig.width=10, fig.height=4}
+for (gene_sig in names(bulkRNAseq_gene_signatures)) {
+  gg_gene_sig <- DotPlot(seurat_obj_T_pseudo,
+        features = bulkRNAseq_gene_signatures[[gene_sig]],
+        group.by = "treatment",
+        cols = "RdBu",
+        dot.scale = 5
+        ) + 
+    labs(title = gene_sig) +
+   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+  print(gg_gene_sig)
+}
+```
+
+```{r fig.width=16, fig.height=10}
+for (gene_sig in names(bulkRNAseq_gene_signatures)) {
+  gg_gene_sig <- DotPlot(seurat_obj_T_pseudo,
+        features = bulkRNAseq_gene_signatures[[gene_sig]],
+        group.by = "cell_types",
+        split.by = "treatment",
+        cols = "RdBu",
+        dot.scale = 5
+        ) + 
+    coord_flip() +
+    labs(title = gene_sig) +
+   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+  print(gg_gene_sig)
+}
+```
+
+### Computing gene signature with UCell
+
+The function AddModuleScore_UCell() allows operating directly on Seurat objects. UCell scores are calculated from raw counts or normalized data, and returned as metadata columns. The example below defines some simple signatures, and applies them on single-cell data stored in a Seurat object.
+
+```{r fig.width=8, fig.height=5}
+# UCELL GENE SIGNATURE SCORE
+## Using positive and negative gene sets, GENE+ or GENE-
+seurat_obj_T_pseudo <- AddModuleScore_UCell(seurat_obj_T_pseudo, 
+                                   features=bulkRNAseq_gene_signatures, name=NULL)
+head(seurat_obj_T_pseudo@meta.data)
+```
+
+```{r}
+seurat_obj_T_pseudo_metadata <- seurat_obj_T_pseudo@meta.data
+saveRDS(seurat_obj_T_pseudo_metadata, paste0(path_r_results, "/VEIGAEST_Tlymphocytes_GeneSignatureScores_metadata.rds"))
+```
+
+### Gene signatures
+```{r}
+gene_signatures_scores_df <- seurat_obj_T_pseudo@meta.data[, c("cell_types", "treatment", names(bulkRNAseq_gene_signatures))]
+
+gene_signatures_scores_df$cell_types <- factor(gene_signatures_scores_df$cell_types, levels = Tcell_types_order)
+gene_signatures_scores_df <- gene_signatures_scores_df %>%
+  arrange(cell_types, treatment)
+
+gene_signatures_scores_df$condition <- paste0(gene_signatures_scores_df$cell_types, "__", gene_signatures_scores_df$treatment)
+gene_signatures_scores_df$cell_types <- NULL
+gene_signatures_scores_df$treatment <- NULL
+rownames(gene_signatures_scores_df) <- gene_signatures_scores_df$condition
+gene_signatures_scores_df$condition <- NULL
+gene_signatures_scores_df
+```
+
+```{r fig.height=6, fig.width=15}
+pheatmap(t(gene_signatures_scores_df), 
+         scale = "row",
+         cluster_rows = FALSE, # Cluster rows
+         cluster_cols = FALSE, # Cluster columns
+         show_rownames = TRUE, # Show row names
+         show_colnames = TRUE, # Show column names
+         color = colorRampPalette(c("blue", "white", "red"))(100), # Color scale
+         border_color = "white",
+         main = "Bulk RNA-seq Gene Signatures")
+```
+
+## Li, J. et al. CancerCell (2023)
+https://doi.org/10.1016/j.ccell.2023.04.011
+
+```{r}
+CRC_gene_signatures <- list(
+  "effector_molec" = c("Ifng", "Nkg7", "Prf1", "Gzmk", "Gzma", "Faslg"),
+  "costimulation_activation" = c("Cd27", "Cd82", "Tnfrsf4", "Tnfrsf9", "Cxcr3"),
+  "coinhibitory_receptors" = c("Pdcd1", "Lag3", "Tigit", "Havcr2", "Ctla4", "Tnfrsf18"),
+  "exhaustion" = c("Tox", "Entpd1", "Batf", "Prdm1"),
+  "chemokines" = c("Ccl3", "Ccl4", "Ccl5", "Cxcl13")
+)
+```
+
+
+### Genes
+```{r fig.width=10, fig.height=3}
+for (gene_sig in names(CRC_gene_signatures)) {
+  gg_gene_sig <- DotPlot(seurat_obj_T_pseudo,
+        features = CRC_gene_signatures[[gene_sig]],
+        group.by = "treatment",
+        cols = "RdBu",
+        dot.scale = 5
+        ) + 
+    labs(title = gene_sig) +
+   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+  print(gg_gene_sig)
+}
+```
+
+```{r fig.width=16, fig.height=7}
+for (gene_sig in names(CRC_gene_signatures)) {
+  gg_gene_sig <- DotPlot(seurat_obj_T_pseudo,
+        features = CRC_gene_signatures[[gene_sig]],
+        group.by = "cell_types",
+        split.by = "treatment",
+        cols = "RdBu",
+        dot.scale = 5
+        ) + 
+    coord_flip() +
+    labs(title = gene_sig) +
+   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+  print(gg_gene_sig)
+}
+```
+
+### Computing gene signature with UCell
+
+The function AddModuleScore_UCell() allows operating directly on Seurat objects. UCell scores are calculated from raw counts or normalized data, and returned as metadata columns. The example below defines some simple signatures, and applies them on single-cell data stored in a Seurat object.
+
+```{r fig.width=8, fig.height=5}
+# UCELL GENE SIGNATURE SCORE
+## Using positive and negative gene sets, GENE+ or GENE-
+seurat_obj_T_pseudo <- AddModuleScore_UCell(seurat_obj_T_pseudo, 
+                                   features=CRC_gene_signatures, name=NULL)
+head(seurat_obj_T_pseudo@meta.data)
+```
+
+### Gene signatures
+```{r}
+gene_signatures_scores_df <- seurat_obj_T_pseudo@meta.data[, c("cell_types", "treatment", names(CRC_gene_signatures))]
+
+gene_signatures_scores_df$cell_types <- factor(gene_signatures_scores_df$cell_types, levels = Tcell_types_order)
+gene_signatures_scores_df <- gene_signatures_scores_df %>%
+  arrange(cell_types, treatment)
+
+gene_signatures_scores_df$condition <- paste0(gene_signatures_scores_df$cell_types, "__", gene_signatures_scores_df$treatment)
+gene_signatures_scores_df$cell_types <- NULL
+gene_signatures_scores_df$treatment <- NULL
+rownames(gene_signatures_scores_df) <- gene_signatures_scores_df$condition
+gene_signatures_scores_df$condition <- NULL
+gene_signatures_scores_df
+```
+
+```{r fig.height=6, fig.width=15}
+pheatmap(t(gene_signatures_scores_df), 
+         scale = "row",
+         cluster_rows = FALSE, # Cluster rows
+         cluster_cols = FALSE, # Cluster columns
+         show_rownames = TRUE, # Show row names
+         show_colnames = TRUE, # Show column names
+         color = colorRampPalette(c("blue", "white", "red"))(100), # Color scale
+         border_color = "white",
+         main = "Li, J. et al. CancerCell (2023) Gene Signatures")
+```
+
+## Krishna, S., et al. Science (2020)
+
+```{r}
+HumanCancer_gene_signatures <- list(
+"Toxsig_scott" = c("Igkc", "Avil", "Tox", "Klrb1c", "Megf11", "Scd1", "Rp23-284k1.6",
+  "Pif1", "Tnfrsf8", "Tmem163", "Nr2f6", "Serpinb6b", "Fgr", "Lrrk1", "Suv39h2", "Esm1",
+  "Cenpe", "Ccr2", "Klrc1", "Nt5dc2", "Cd244", "Aspm", "Fam20a", "Zdhhc2", "Ubash3b",
+  "Sapcd2", "Scd2", "Kif20b", "Ccr5", "Acsl3", "Wee1", "Hmmr", "Sh2d5", "Myo1e", "Cenpf",
+  "Havcr2", "Eomes", "Pak6", "Ahr", "Arsb", "Klrk1", "Il10", "Ckap5", "Alyref", "Gen1",
+  "Il24", "Ect2", "Mki67", "Gtf2ird1", "Gzma", "Hmgcs1", "Bspry", "Zbtb32", "Tubb6",
+  "Bub1", "Anln", "Sgol2a", "Ulbp1", "Lmnb1", "Ccna2", "Cobll1", "Hras", "Stk39", "Fancb",
+  "Srsf2", "Mpp6", "Fhl2", "Kif11", "Ncapg2", "Fkbp5", "Ankle1", "Stil", "Prc1", "Gpr141",
+  "Mtmr1", "Nfil3", "Bub1b", "Itgav", "Swap70", "Usp1", "Entpd1", "Rac1", "Sgol1",
+  "Ncapg", "Pgp", "Spag5", "Slc25a13", "Emilin2", "Trim59", "Ccnb1", "Mastl", "Asb2",
+  "Srsf9", "Cdc25c", "Man2a1", "Kntc1", "Aurka", "Topbp1", "Cep55", "Ugcg"),
+
+"exhaust_1_feldman" = c("Spc25", "Cdca5", "Esco2", "Cdc45", "Zwint", "Shcbp1", "Dlgap5", "Rad51", "Kif18b", "Rrm2",
+  "Birc5", "Tk1", "Hjurp", "Ube2c", "Ccnb2", "Cenpw", "Gins2", "Rad51ap1", "Dtl", "Spc24",
+  "Cdca3", "Pkmyt1", "Melk", "Anln", "Cdca8", "Kiaa0101", "Ggh", "AurkB", "Asf1b", "Cdc20",
+  "Ncapg", "Dhfr", "Kifc1", "Tyms", "Ckap2l", "Clspn", "Mlf1ip", "Troap", "Kif2c", "Wdr34",
+  "Cdk1", "Kif23", "Plk1", "Top2a", "Nuf2", "Hmgb3", "Aspm", "Mcm2", "Orc6", "Casc5",
+  "Cenph", "Fen1", "Brca1", "Mcm4", "Timeless", "Mki67", "Cdkn3", "Apobec3b", "Ccnb1", "Tpx2",
+  "Ncapg2", "Kif11", "Tcf19", "Ube2t", "Spag5", "Brca2", "Ccna2", "Bub1b", "Chek1", "Bub1",
+  "Fanci", "Cenpm", "Rnaseh2a", "Hirip3", "Mad2l1", "Ccnf", "Stmn1", "Smc2", "Cks1b", "Paics",
+  "NcapH", "Atad5", "Prc1", "Rfc5", "Cenpf", "Cenpn", "Cdca7", "Chtf18", "Cenpe", "Wdr76",
+  "Fbxo5", "Cdca7l", "Rfc4", "Pold1", "Lrr1", "Racgap1", "Snrnp25", "Kntc1", "Nudt1", "Acot7",
+  "Cdk2", "Gmnn", "Tmem106c", "Lig1", "Fancg", "Mxd3", "Pcna", "C19orf48", "Pola2", "Pole",
+  "Ndc80", "Mcm3", "Cdk4", "Slc43a3", "Tubg1", "Nme1", "Haus8", "Mcm7", "Ncapd2", "Rfc2",
+  "Shmt1", "DtymK", "Phf19", "Pold3", "Dctpp1", "Pop7", "Ahcy", "Tex30", "Nusap1", "Dut",
+  "Kif18a", "Mrpl17", "Ggct", "Cenpk", "Haus4", "Pold2", "Lmnb1", "Blm", "Prim1", "Mt1e",
+  "Cdca4", "Rrm1", "Rbbp8", "Ncapd3", "Tfdp1", "Ung", "Atad2", "Acat2", "Hadh", "Pafah1b3",
+  "Yeats4", "Rpa3", "Timm10", "Mcm5", "Fancd2", "Rad51c", "Icmt", "Hist1h1d", "Lsm5", "Ssrp1",
+  "Hist1h4c", "Dpysl2", "Ttf2", "Eef1e1", "Nup37", "Ebna1bp2", "Ccdc167", "Msh2", "Fh", "Ddx11",
+  "Mrpl12", "Prdx4", "Dnajc9", "Anapc15", "Itgb3bp", "Magohb", "Mms22l", "Actl6a", "Bola3", "Usp1",
+  "Nabp2", "Mcm6", "Ruvbl2", "Vrk1", "NcapH2", "Hells", "Kif22", "Whsc1", "Myl6b", "Pdcd5",
+  "Shmt2", "Hist1h1c", "Ranbp1", "Sccpdh", "Haus1", "Mrps23", "Ubr7", "Polr2h"),
+
+"exhaust_2_feldman" = c("Gem", "Layn", "Vcam1", "Rdh10", "Fam3c", "Kir2dl4", "Tnfrsf18", "Mtss1", "Cadm1", "Entpd1",
+  "Etv1", "Afap1l2", "Tnfrsf9", "Nab1", "Peli1", "Dfnb31", "Ctla4", "Hspb1", "Fkbp4", "Namptl",
+  "Myo7a", "Cxcl13", "Golim4", "Phlda1", "Dnaja4", "Tgif1", "Havcr2", "Aplp2", "Gpr56", "Bpgm",
+  "Sec14l1", "Tnip3", "Metrnl", "Hsph1", "Klrc2", "Pmaip1", "Dusp4", "Igflr1", "Hspa1a", "Zfand2a",
+  "Ndfip2", "Pam", "Tp53inp1", "Ahi1", "Ube2f", "Hspa4", "Icos", "Chordc1", "Trps1", "Tbc1d4",
+  "Rala", "Cd82", "Sema4a", "Pon2", "Acp5", "Ccdc64", "Bhlhe40", "Nampt", "Ahsa1", "Banp",
+  "Rhbbd2", "Crem", "Slc7a5", "Cacybp", "Nusap1", "Stip1", "Lrmp", "Pde3b", "Rgs2", "Ccdc141",
+  "Snap47", "Dedd2", "Btg3", "Itprip", "Hspa1b", "Galnt2", "Tnfsf9", "Rangap1", "Pdcd1", "Ddx3y",
+  "Arid5b", "Dusp10", "Zbtb1", "Samsn1", "Irf4", "Cd2bp2", "Syngr2", "Cdk6", "Mctp2", "Rab27a",
+  "Hspd1", "Nfat5", "Batf", "Gzmb", "Neu1", "Syt11", "Cxcr6", "Cnih1", "Fcrl3", "Crtam",
+  "Ttn", "Tox", "Morf4l2", "Tigit", "Dctn6", "Mthfd2", "Fut8", "Gata3", "Stat5b", "Akirin2",
+  "Whsc1l1", "Stat3", "Zeb2", "Msi2", "B3gnt2", "Eif4e", "Cks2", "Hspe1", "Kpna2", "Ngrn",
+  "Ptpn11", "Snap23", "Rasgef1b", "Pfkfb3", "Tnfrsf1b", "Cd27", "Trim13", "Arnt", "Sqstm1", "Mob4",
+  "Vps37b", "Arl8b", "Tmem140", "Dnaja1", "Zc3h7a", "GalM", "Stat5a", "Card16", "Amd1", "Rgcc",
+  "Golga4", "Sdcbp", "Hnrnpll", "Nr4a1", "Birc3", "Fbxw11", "Tank", "Asxl2", "Eif5", "Fkbp1a",
+  "Gspt1", "Jmjd6", "Prdm1", "Laptm4a", "Il21r", "Arpp19", "Fabp5", "Sar1b", "Lyst", "Ezh2",
+  "Herpud1", "Traf5", "Anxa5", "Znf331", "Ube2b", "Hbp1", "Sytl3", "Gtf3c1", "Fas", "Sppl2a",
+  "Atxn1", "Gga2", "C5orf15", "Tspyl2", "Pmf1", "Rbpj", "Polr3e", "Rapgef1", "Nop58", "Eed",
+  "Chst12", "Gtf2b", "Tmx4", "Ccnd2", "Papola", "Fam53b", "Cct4", "Trim59", "Fxr1", "Ppil4",
+  "Lag3", "Dnajb6", "Smap2", "GpBp1", "Sertad1", "Pag1", "Trim26", "Tcp1", "Azin1"),
+
+"exhaust_3_feldman" = c("Ccl3", "Epsti1", "Cd38", "Faslg", "Ifi44l", "Gimap6", "Trafd1", "Lgals9", "Cxcr6", "Rab37",
+  "Ccr5", "Zbp1", "Samd9l", "Sirpg", "Mx1", "Havcr2", "Acp5", "Ddx60", "Pdcd1", "Sh2d3c",
+  "Gpr174", "Rps6ka1", "Gbp5", "Gbp1", "Ptpn6", "S100pbp", "Ifi35", "Oas3", "Snap47", "Gimap4",
+  "Parp9", "Ifng", "Sit1", "Pycard", "Rgs3", "Xaf1", "Oas2", "C5orf56", "Gimap5", "Abi3",
+  "Snx20", "Vamp5", "Irf2", "Ubash3a", "Parp10", "Gimap7", "Gbp4", "Pvrig", "Cyth4", "Dtx3l",
+  "Rhoc", "Sash3", "Ccl4l2", "Ifi6", "Bcas4", "Ikzf3", "Gimap2", "Adora2a", "Arpc5l", "Gyg1",
+  "Slfn5", "Chst12", "Apobec3d", "Wars", "Ube2l6", "Tmem140", "Csk", "F2r", "Ctss", "Slamf7",
+  "Cxcr3", "Cd27", "Ppp1r18", "Tox", "Ctsc", "Slamf6", "Stat1", "Fut8", "Idh2", "Pced1b",
+  "Bst2", "Psmb10", "Stat2", "RnaseT2", "Rbck1", "Sel1l3", "C14orf159", "H2-Aa", "Gzma", "Cd63",
+  "Dennd2d", "H2-Ab1", "Prf1", "Cd84", "Tigit", "Ccl4l1", "Plscr1", "Lag3", "Daxx", "Phf11",
+  "Igflr1", "Atp6v1e1", "H2-Eb1", "Cmtm3", "Dnajc4", "Lasp1", "H2-Dma", "Nckap1l", "Oasl",
+  "Tmem179b", "Ccl4", "Usb1", "Ube2f", "Chmp5", "C19orf66", "Ppm1m", "St8sia4", "Yars",
+  "Tbc1d10c", "Drap1", "Pold4", "Trappc1", "Pkn1", "Jakmip1", "Lcp2", "Casp4", "Apol2", "Casp1",
+  "Abca2", "H2-DMb1", "Ifi27l2a", "Synrg", "Arhgap30", "Irf7", "Rarres3", "Hmox2", "Lsm2",
+  "Gzmh", "Isg15", "Chfr", "Trpv2", "Znhit1", "H2-DPa", "Uba7", "Adam8", "Golim4", "Serpinb1",
+  "Atf6b", "Shisa5", "Itgb7", "Tmbim4", "Traf3ip3", "Gpr171", "Traf5", "Arhgef3", "Psmb8",
+  "Il2rb", "Apobec3g", "Calcoco2", "Mphosph9", "Dthd1", "Ly6e", "Ppcs", "Capn1", "Gbp2",
+  "Pyhin1", "Fkbp1a", "Nudt22", "Ctsd", "Trim14", "Slc25a45", "Klrd1", "Ucp2", "Unc13d",
+  "Psmb9", "Gsdmd", "Irf9", "Mpg", "Myo1f", "Slfn12l", "Fermt3", "Mus81", "Apol6", "C17orf62",
+  "Fcrl3", "Icam3", "Sp140"
+)
+)
+```
+
+### Computing gene signature with UCell
+
+The function AddModuleScore_UCell() allows operating directly on Seurat objects. UCell scores are calculated from raw counts or normalized data, and returned as metadata columns. The example below defines some simple signatures, and applies them on single-cell data stored in a Seurat object.
+
+```{r fig.width=8, fig.height=5}
+# UCELL GENE SIGNATURE SCORE
+## Using positive and negative gene sets, GENE+ or GENE-
+seurat_obj_T_pseudo <- AddModuleScore_UCell(seurat_obj_T_pseudo, 
+                                   features=HumanCancer_gene_signatures, name=NULL)
+head(seurat_obj_T_pseudo@meta.data)
+```
+
+### Gene signatures
+```{r}
+gene_signatures_scores_df <- seurat_obj_T_pseudo@meta.data[, c("cell_types", "treatment", names(HumanCancer_gene_signatures))]
+
+gene_signatures_scores_df$cell_types <- factor(gene_signatures_scores_df$cell_types, levels = Tcell_types_order)
+gene_signatures_scores_df <- gene_signatures_scores_df %>%
+  arrange(cell_types, treatment)
+
+gene_signatures_scores_df$condition <- paste0(gene_signatures_scores_df$cell_types, "__", gene_signatures_scores_df$treatment)
+gene_signatures_scores_df$cell_types <- NULL
+gene_signatures_scores_df$treatment <- NULL
+rownames(gene_signatures_scores_df) <- gene_signatures_scores_df$condition
+gene_signatures_scores_df$condition <- NULL
+gene_signatures_scores_df
+```
+
+```{r fig.height=5, fig.width=15}
+pheatmap(t(gene_signatures_scores_df), 
+         scale = "row",
+         cluster_rows = FALSE, # Cluster rows
+         cluster_cols = FALSE, # Cluster columns
+         show_rownames = TRUE, # Show row names
+         show_colnames = TRUE, # Show column names
+         color = colorRampPalette(c("blue", "white", "red"))(100), # Color scale
+         border_color = "white",
+         main = "Krishna, S., et al. Science (2020) Gene Signatures")
+```
+
+
+# Session Info
+```{r}
+sessionInfo()
+```

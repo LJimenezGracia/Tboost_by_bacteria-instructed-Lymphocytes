@@ -1,0 +1,132 @@
+---
+title: "Cell-type abundance with scCODA: results"
+author: "Laura Jiménez Gracia"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+```
+
+# Introduction
+
+## Objective
+In this Rmarkdown document, we are going to
+
+# Pre-processing
+## Libraries
+```{r warning = FALSE, message = FALSE}
+library(tidyverse)
+library(RColorBrewer)
+```
+
+## Parameters
+Here we will define and load objects and functions that will be used throughout the document.
+```{r}
+# Paths
+path_r_tables <- here::here("04_GEX_analysis/compositional_analysis/results/tables")
+path_r_figs <- here::here("04_GEX_analysis/compositional_analysis/results/figs")
+
+# Functions
+source(here::here("bin/utils.R"))
+
+# Parameters
+comparison_name_list <- c("aCD3CD28_BEADS-PBS", "BACT-PBS", "BACT-aCD3CD28_BEADS")
+comparison_info_list <- c("aCD3/CD28 vs. PBS", "Tboost vs. PBS", "Tboost vs. aCD3/CD28")
+
+cells_order <- c(# B
+                     "Immature B cells",
+                     "Mature B cells",
+                     "Plasma cells",
+                      # DCs
+                      "cDC1", "cDC2", "mregDCs", "mo-DCs","pDCs",
+                      # Monocytes/Macrophages
+                      "Classical Monocytes", "Arg1+ TAMs", "Ccl8+ TAMs", "Cycling Ccl8+ TAMs",
+                      # T Lymphocytes
+                      "Stem-like CD8 T cells",
+                      "Effector CD8 T cells",
+                      "Effector Memory CD8 T cells",
+                      "IFN-responder CD8 T cells",
+                      "Exhausted CD8 T cells",
+                      "Cycling CD8 T cells", 
+                      "Exhausted CD4 T cells",
+                      "Tregs", "Cycling Tregs", 
+                      "Th",
+                      "MAIT", 
+                      "g/dv2-17 cells",
+                      "NKT cells",
+                      # ILCs
+                      "CD27+CD11b- NK cells", "CD27-CD11b+ NK cells", "IFN-responder NK cells", "Cycling NK cells",
+                      "ILC1", "ILC2", 
+                      "Mature TANs", 
+                      "N2 TANs",
+                      "N1 TANs",
+                      "IFN-response TANs",
+                      "Mast cells")
+```
+
+
+## Load data
+The data used in this Rmarkdown document comes from **VEIGAEST** dataset.
+```{r}
+sccoda_effect_df_list <- purrr::map2(comparison_name_list, 
+                                     comparison_info_list, 
+                                     function(comparison_name, comparison_info){
+  file_path <- paste0(path_r_tables, "/scCODA_celltypes_", comparison_name, "_effect.tsv")
+  df <- read.csv(file = file_path, sep = "\t")
+  df["comparison_name"] <- comparison_name
+  df["comparison_fraction"] <- sapply(strsplit(comparison_info, "vs "), `[`, 1)
+  df["credible_effects"] <- ifelse(df$Final.Parameter == 0, "False", "True")
+  df
+})
+
+sccoda_effect_global_df <- do.call("rbind", sccoda_effect_df_list)
+sccoda_effect_global_df$comparison_fraction <- factor(sccoda_effect_global_df$comparison_fraction, levels = rev(comparison_info_list))
+sccoda_effect_global_df$Cell.Type <- factor(sccoda_effect_global_df$Cell.Type, levels = cells_order)
+
+head(sccoda_effect_global_df)
+```
+
+# Dotplot immune
+```{r fig.height=4.25, fig.width=10}
+gg_dotplot_effect_glob <- sccoda_effect_global_df %>%
+    ggplot(aes(
+      x = Cell.Type, 
+      y = comparison_fraction,
+      color = log2.fold.change, 
+      size = credible_effects)) + 
+    ggplot2::geom_point() + 
+    scale_color_gradient2(low="blue", mid="lightgrey", high="red") + # , limits = c(-1,1),
+    cowplot::theme_cowplot() + 
+    labs(title = "scCODA results",
+         color = "Log2FC",
+         size = "Credible effects (FDR < 0.2)") + 
+    theme(axis.ticks = element_blank(),
+          axis.title = element_blank(),
+          axis.line  = element_blank(),
+          axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+          legend.position = "bottom",
+          legend.text = element_text(size=10))
+
+gg_dotplot_effect_glob
+
+fig_path <- paste0(path_r_figs, "/scCODA_dotplot_celltype.png")
+ggsave(filename = fig_path, 
+       plot = gg_dotplot_effect_glob, width = 10, height = 4.25)
+
+pdf(file = paste0(path_r_figs, "/scCODA_dotplot_celltype.pdf"), width = 10, height = 4.25) 
+print(gg_dotplot_effect_glob)    
+dev.off()   
+```
+
+
+# Session Info
+```{r}
+sessionInfo()
+```

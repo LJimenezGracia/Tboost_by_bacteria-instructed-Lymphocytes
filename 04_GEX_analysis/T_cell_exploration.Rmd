@@ -1,0 +1,374 @@
+---
+title: "Final Annotation"
+author: "Laura Jiménez Gracia"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+```
+
+# Introduction
+
+## Objective
+In this Rmarkdown document, we are going to merge cell type identities annotated by independent cell-lineage analysis into a single one.
+
+# Pre-processing
+## Libraries
+```{r warning = FALSE, message = FALSE}
+library(tidyverse)
+library(Seurat)
+library(DT)
+library(grid)
+library(RColorBrewer)
+library(scales)
+library(gtable)
+library(fmsb)
+```
+
+## Parameters
+Here we will define and load objects and functions that will be used throughout the document.
+```{r}
+# Paths
+path_project_metadata <- here::here("01_cellranger_mapping/data/VEIGAEST_metadata.csv")
+
+path_r_objects <- here::here("03_clustering_annotation/results/R_objects")
+path_r_signatures <- here::here("04_GEX_analysis/gene_signatures/results")
+
+# Functions
+source(here::here("bin/utils.R"))
+`%ni%` <- Negate(`%in%`)
+
+# Parameters
+confounder_variables <- c("treatment")
+confounder_names <- c("Treatment")
+
+qc_metrics <-  c("nCount_RNA", "nFeature_RNA", "pct_mt", "pct_rb", "S.Score", "G2M.Score")
+
+# Color palette
+color_palette <- Polychrome::createPalette(32, c("#fc6060", "#74f774", "#7c7cfc"))
+names(color_palette) <- NULL
+#Polychrome::swatch(color_palette)
+
+Tcell_types_order <- c("Stem-like CD8 T cells",
+  "Effector Memory CD8 T cells",
+  "Effector CD8 T cells",
+  "IFN-responder CD8 T cells",
+  "Exhausted CD8 T cells",
+  "Cycling CD8 T cells", 
+  "Exhausted CD4 T cells",
+  "Tregs", 
+  "Cycling Tregs", 
+  "Th"
+  )
+
+fractionT_color_palette <- c("CD8+ T cells" = "#90CAF9", "CD4+ T cells" = "#D0A9F5")
+```
+
+## Load metadata
+The data used in this Rmarkdown document comes from **VEIGAEST** dataset.
+```{r}
+# Load all metadata information
+metadata <- read.csv(path_project_metadata)
+metadata <- metadata %>% filter(type == "cDNA")
+print("Libraries metadata")
+DT::datatable(metadata, options = list(scrollX = TRUE))
+```
+
+# Load data
+
+```{r}
+seurat_obj <- readRDS(paste0(path_r_objects, "/VEIGAEST_clustering_annotation_full_cleaned.rds"))
+
+# Gene signatures
+seurat_obj_T_pseudo_metadata <- readRDS(paste0(path_r_signatures, "/VEIGAEST_Tlymphocytes_GeneSignatureScores_metadata.rds"))
+```
+
+```{r}
+# Subset on conditions of interest
+Idents(seurat_obj) <- "treatment"
+seurat_obj_cond <- subset(seurat_obj, idents = "BACB", invert = TRUE)
+seurat_obj_cond$treatment <- as.character(seurat_obj_cond$treatment)
+seurat_obj_cond$treatment <- factor(x = seurat_obj_cond$treatment, levels = c("PBS", "aCD3CD28_BEADS", "BACT"))
+seurat_obj_cond
+```
+
+```{r}
+# Subsetting on T Lymphocytes
+seurat_obj_cond_T <- subset(seurat_obj_cond, subset = cell_lineages == "T Lymphocytes")
+seurat_obj_cond_T
+```
+
+
+
+```{r}
+Idents(seurat_obj_cond_T) <- "cell_types"
+seurat_obj_cond_T <- subset(seurat_obj_cond_T, idents =  c("MAIT", "g/dv2-17 cells", "NKT cells"), invert = TRUE)
+
+# Reorder cell names
+seurat_obj_cond_T$cell_types <- as.factor(as.character(seurat_obj_cond_T$cell_types))
+seurat_obj_cond_T$cell_types <- factor(x = seurat_obj_cond_T$cell_types, levels = Tcell_types_order)
+```
+
+
+```{r}
+# Split T cell fractions
+seurat_obj_cond_T$fraction_Tcells <- as.character(seurat_obj_cond_T$cell_types)
+
+seurat_obj_cond_T$fraction_Tcells[seurat_obj_cond_T$cell_types %in% c("Stem-like CD8 T cells","Effector Memory CD8 T cells",
+  "Effector CD8 T cells",  "IFN-responder CD8 T cells",  "Exhausted CD8 T cells",  "Cycling CD8 T cells")] <- "CD8+ T cells"
+
+seurat_obj_cond_T$fraction_Tcells[seurat_obj_cond_T$cell_types %in% c("Exhausted CD4 T cells", "Tregs", "Cycling Tregs", "Th")] <- "CD4+ T cells"
+
+seurat_obj_cond_T$fraction_Tcells <- as.factor(seurat_obj_cond_T$fraction_Tcells)
+
+table(seurat_obj_cond_T$fraction_Tcells, seurat_obj_cond_T$treatment)
+```
+
+## CD4/CD8 ratio
+```{r fig.width=5, fig.height=5}
+dittoSeq::dittoBarPlot(seurat_obj_cond_T, 
+                       "fraction_Tcells",
+                       group.by = "treatment",
+                       scale = "percent",
+                      retain.factor.levels = TRUE,
+                       color.panel = fractionT_color_palette)
+```
+
+```{r fig.width=5, fig.height=15}
+df <- dittoSeq::dittoBarPlot(seurat_obj_cond_T, 
+                       "fraction_Tcells",
+                       group.by = "treatment",
+                       scale = "percent",
+                      retain.factor.levels = TRUE,
+                       color.panel = fractionT_color_palette,
+                      data.out = TRUE)
+
+# Create the pie chart for each grouping
+df$data %>%
+  ggplot(aes(x = "", y = percent, fill = label)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  facet_wrap(~ grouping, ncol = 1) +
+  scale_fill_manual(values = fractionT_color_palette) +
+  theme_void() +
+  theme(legend.position = "right",
+        legend.text = element_text(size = 12)) +
+  labs(fill = "") +
+  geom_text(aes(label = count), 
+            position = position_stack(vjust = 0.5), 
+            color = "black", size = 6)
+```
+```{r}
+genes_of_activation <- c("Il2r2", "Tnfrsf4", "Cd80", "Sos1", "Cd28", "Pdcd1", "Cd247",
+                         "Map3k1", "Pak1", "Cd3e", "Cd3d", "Sell", "Cxcr5", "Prkcq", "Pik3r3",
+                         "Jun", "Was"
+                       )
+```
+
+```{r fig.width=8, fig.height=4}
+dotplot_cells_activation <- DotPlot(seurat_obj_cond_T,
+        features = genes_of_activation,
+        group.by = "fraction_Tcells",
+        split.by = "treatment",
+        scale = TRUE,
+        cols = "RdBu",
+        dot.scale = 5) +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust = 0.5, face = "italic"))
+
+dotplot_cells_activation
+```
+
+## CD8 T cell profiles
+```{r}
+# Subset on conditions of interest
+seurat_obj_cond_TCD8 <- subset(seurat_obj_cond_T, subset = fraction_Tcells == "CD8+ T cells")
+seurat_obj_cond_TCD8
+
+# Reorder cell names
+seurat_obj_cond_TCD8$cell_types <- as.factor(as.character(seurat_obj_cond_TCD8$cell_types))
+seurat_obj_cond_TCD8$cell_types <- factor(x = seurat_obj_cond_TCD8$cell_types, levels = c("Stem-like CD8 T cells",
+  "Effector Memory CD8 T cells",
+  "Effector CD8 T cells",
+  "IFN-responder CD8 T cells",
+  "Exhausted CD8 T cells",
+  "Cycling CD8 T cells")
+  )
+
+table(seurat_obj_cond_TCD8$cell_types, seurat_obj_cond_TCD8$treatment)
+```
+
+### Gene Markers
+```{r}
+genes_of_interest <- c("Tox", "Havcr2", "Pdcd1", # Exhaustion
+                       "Gzmk", "Gzmb", "Prf1", "Nkg7", "Ifng", "Tnfrsf9", # Effector molecules
+                       "Ccl3", "Ccl4", "Ccl5", "Cxcl13" # Chemokines
+                       )
+```
+
+```{r fig.width=7, fig.height=8}
+dotplot_cells <- DotPlot(seurat_obj_cond_TCD8,
+        features = genes_of_interest,
+        group.by = "cell_types",
+        split.by = "treatment",
+        cols = "RdBu",
+        dot.scale = 5) +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust = 0.5),
+        axis.text.y = element_text(face = "italic")) + 
+  coord_flip()+ 
+  scale_colour_gradient2(low="blue", mid="white", high="red")
+
+dotplot_cells
+
+pdf(file = "VEIGAEST_TCD8_byCond_dotplot.pdf", width = 7, height = 8)    
+print(dotplot_cells)    
+dev.off()   
+```
+
+```{r}
+genes_of_profile <- c("Sell", "Ccr7", "Lef1", "Bcl2", "Tcf7", # naive survival
+                         "Gpr183", "Ltb", "Cxcr3", "Il7r", "Slamf6",  # memory
+                         "Isg15", "Ifit1", "Bst2", "Stat1", "Irf7", "Oas3", # IFN response
+                         "Lgals3", "Vim", "S100a4", "Anxa2", # cytoskeleton
+                         "Lgals1", "Gzmb", "Gzma", "Prf1", "Zeb2", "Klrg1", "Klre1", "Cx3cr1", # effector
+                         "Birc5", "Cdk1", "Stmn1", "Mki67", "Top2a" # proliferation
+                       )
+```
+
+```{r fig.width=14, fig.height=4}
+dotplot_cells_profile <- DotPlot(seurat_obj_cond_TCD8,
+        features = genes_of_profile,
+        group.by = "cell_types",
+        #split.by = "treatment",
+        scale = TRUE,
+        cols = "RdBu",
+        dot.scale = 5) +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust = 0.5, face = "italic"))
+
+dotplot_cells_profile
+```
+
+
+### Gene 4BB1
+
+```{r fig.width=9, fig.height=5}
+VlnPlot(seurat_obj_cond_TCD8,
+        features = "Tnfrsf9",
+        group.by = "cell_types",
+        split.by = "treatment")
+```
+
+### Signature
+
+```{r}
+# Subset conditions
+seurat_obj_T_pseudo_metadata <- seurat_obj_T_pseudo_metadata %>%
+  filter(treatment != "BACB") %>% 
+  filter(!cell_types %in% c("MAIT", "g/dv2-17 cells", "NKT cells"))
+
+# Reorder cell names
+seurat_obj_T_pseudo_metadata$cell_types <- as.factor(as.character(seurat_obj_T_pseudo_metadata$cell_types))
+seurat_obj_T_pseudo_metadata$cell_types <- factor(x = seurat_obj_T_pseudo_metadata$cell_types, levels = Tcell_types_order)
+
+# Split T cell fractions
+seurat_obj_T_pseudo_metadata$fraction_Tcells <- as.character(seurat_obj_T_pseudo_metadata$cell_types)
+seurat_obj_T_pseudo_metadata$fraction_Tcells[seurat_obj_T_pseudo_metadata$cell_types %in% c("Stem-like CD8 T cells","Effector Memory CD8 T cells",
+  "Effector CD8 T cells",  "IFN-responder CD8 T cells",  "Exhausted CD8 T cells",  "Cycling CD8 T cells")] <- "CD8+ T cells"
+seurat_obj_T_pseudo_metadata$fraction_Tcells[seurat_obj_T_pseudo_metadata$cell_types %in% c("Exhausted CD4 T cells", "Tregs", "Cycling Tregs", "Th")] <- "CD4+ T cells"
+seurat_obj_T_pseudo_metadata$fraction_Tcells <- as.factor(seurat_obj_T_pseudo_metadata$fraction_Tcells)
+table(seurat_obj_T_pseudo_metadata$cell_types, seurat_obj_T_pseudo_metadata$treatment)
+```
+
+```{r}
+seurat_obj_TCD8_pseudo_metadata <- seurat_obj_T_pseudo_metadata %>%
+  filter(fraction_Tcells == "CD8+ T cells") %>%
+  select(Tc1_phenotype, treatment, cell_types)
+
+seurat_obj_TCD8_pseudo_metadata
+```
+
+```{r}
+# Prepare data for radar plot
+radar_data <- seurat_obj_TCD8_pseudo_metadata %>%
+  pivot_wider(names_from = cell_types, values_from = Tc1_phenotype)
+
+# Add the required min/max rows for fmsb
+max_values <- rep(0.5, ncol(radar_data) - 1)  # Set maximum values to 1
+min_values <- rep(0, ncol(radar_data) - 1)  # Set minimum values to 0
+
+# Combine the min/max rows with actual data
+radar_data <- rbind(max_values, min_values, radar_data[,-1])
+
+# Generate the radar plot
+radar_chart_colors <- c("red", "blue", "green")  # Customize as needed
+
+radarchart(radar_data,
+           axistype = 1,
+           pcol = radar_chart_colors, 
+           pfcol = adjustcolor(radar_chart_colors, alpha.f = 0.25),
+           plwd = 2,
+           plty = 1,
+           cglcol = "grey", 
+           cglty = 1, 
+           axislabcol = "grey", 
+           vlcex = 1.1,
+           title = "Tc1 Phenotype across CD8+ T cells")
+           
+legend("topright", legend = unique(seurat_obj_T_pseudo_metadata$treatment), 
+       col = radar_chart_colors, lty = 1, lwd = 2, bty = "n")
+```
+
+
+## CD4 T cell profiles
+```{r}
+# Subset on conditions of interest
+seurat_obj_cond_TCD4 <- subset(seurat_obj_cond_T, subset = fraction_Tcells == "CD4+ T cells")
+seurat_obj_cond_TCD4
+
+# Reorder cell names
+seurat_obj_cond_TCD4$cell_types <- as.factor(as.character(seurat_obj_cond_TCD4$cell_types))
+seurat_obj_cond_TCD4$cell_types <- factor(x = seurat_obj_cond_TCD4$cell_types, levels = c(
+  "Exhausted CD4 T cells",
+  "Tregs", 
+  "Cycling Tregs", 
+  "Th")
+  )
+
+table(seurat_obj_cond_TCD4$cell_types, seurat_obj_cond_TCD4$treatment)
+```
+
+```{r}
+genes_of_interest <- c("Tox", "Havcr2", "Pdcd1", # Exhaustion
+                       "Gzmk", "Gzmb", "Prf1", "Nkg7", "Ifng", "Tnfrsf9", # Effector molecules
+                       "Ccl3", "Ccl4", "Ccl5", "Cxcl13" # Chemokines
+                       )
+```
+
+```{r fig.width=6, fig.height=8}
+dotplot_cells <- DotPlot(seurat_obj_cond_TCD4,
+        features = genes_of_interest,
+        group.by = "cell_types",
+        split.by = "treatment",
+        cols = "RdBu",
+        dot.scale = 5) +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust = 0.5),
+        axis.text.y = element_text(face = "italic")) + 
+  coord_flip()+ 
+  scale_colour_gradient2(low="blue", mid="white", high="red")
+
+dotplot_cells
+
+pdf(file = "VEIGAEST_TCD4_byCond_dotplot.pdf", width = 6, height = 8)    
+print(dotplot_cells)    
+dev.off()   
+```
+# Session Info
+```{r}
+sessionInfo()
+```
