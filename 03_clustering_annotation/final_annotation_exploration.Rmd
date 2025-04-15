@@ -1,0 +1,567 @@
+---
+title: "Final Annotation"
+author: "Laura Jiménez Gracia"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+```
+
+# Introduction
+
+## Objective
+In this Rmarkdown document, we are going to merge cell type identities annotated by independent cell-lineage analysis into a single one.
+
+# Pre-processing
+## Libraries
+```{r warning = FALSE, message = FALSE}
+library(tidyverse)
+library(Seurat)
+library(DT)
+library(grid)
+library(RColorBrewer)
+library(scales)
+library(gtable)
+```
+
+## Parameters
+Here we will define and load objects and functions that will be used throughout the document.
+```{r}
+# Paths
+path_project_metadata <- here::here("01_cellranger_mapping/data/VEIGAEST_metadata.csv")
+
+path_r_objects <- here::here("03_clustering_annotation/results/R_objects")
+path_r_figs <- here::here("03_clustering_annotation/results/figs")
+path_r_tables <- here::here("03_clustering_annotation/results/tables")
+
+# Functions
+source(here::here("bin/utils.R"))
+`%ni%` <- Negate(`%in%`)
+
+# Parameters
+confounder_variables <- c("treatment")
+confounder_names <- c("Treatment")
+
+qc_metrics <-  c("nCount_RNA", "nFeature_RNA", "pct_mt", "pct_rb", "S.Score", "G2M.Score")
+
+# Color palette
+color_palette <- Polychrome::createPalette(32, c("#fc6060", "#74f774", "#7c7cfc"))
+names(color_palette) <- NULL
+#Polychrome::swatch(color_palette)
+```
+
+## Load metadata
+The data used in this Rmarkdown document comes from **VEIGAEST** dataset.
+```{r}
+# Load all metadata information
+metadata <- read.csv(path_project_metadata)
+metadata <- metadata %>% filter(type == "cDNA")
+print("Libraries metadata")
+DT::datatable(metadata, options = list(scrollX = TRUE))
+```
+
+# Load data
+```{r}
+seurat_obj <- readRDS(paste0(path_r_objects, "/VEIGAEST_clustering_annotation_full_cleaned.rds"))
+seurat_obj
+```
+
+# Remove uninteresting cells
+```{r}
+Idents(seurat_obj) <- "treatment"
+seurat_obj <- subset(seurat_obj, idents = "BACB", invert = TRUE)
+seurat_obj$treatment <- as.factor(as.character(seurat_obj$treatment))
+seurat_obj$treatment <- factor(x = seurat_obj$treatment,
+                               levels = c("PBS", "aCD3CD28_BEADS", "BACT"))
+Idents(seurat_obj) <- "cell_types"
+seurat_obj
+```
+
+
+```{r}
+table(seurat_obj$treatment)
+```
+
+## Dimensionality reduction
+```{r}
+seurat_obj <- seurat_obj %>% 
+  FindVariableFeatures(nfeatures = 3000) %>% 
+  ScaleData() %>% 
+  RunPCA() %>% 
+  harmony::RunHarmony(group.by.vars = "gem_id") %>%
+  RunUMAP(reduction = "harmony", dims = 1:30)
+```
+
+## Save
+```{r}
+# Save annotated Seurat object
+saveRDS(seurat_obj, paste0(path_r_objects, "/VEIGAEST_clustering_annotation_full_cleaned_BacT.rds"))
+#seurat_obj <- readRDS(paste0(path_r_objects, "/VEIGAEST_clustering_annotation_full_cleaned_BacT.rds"))
+```
+
+
+# Data exploration
+## Lineages
+```{r}
+cell_lineages_list <- c("B Lymphocytes", "DCs", "Monocytes/Macrophages", "T Lymphocytes", "ILCs", "Granulocytes")
+# Assign lineages colors
+lineages_color_palette <- c("B Lymphocytes" = "#F94144",
+                            "DCs" = "#90BE6D",
+                            "Monocytes/Macrophages" = "#F9844A",
+                            "T Lymphocytes" = "#277DA1",
+                            "ILCs" = "#6F4518", 
+                            "Granulocytes" = "#132A13"
+)
+```
+
+```{r fig.width=16, fig.height=12}
+# Clustering overview
+gg_umap_clustering_cellsubtypes_cleaned <- DimPlot(object = seurat_obj,
+        group.by = "cell_lineages",
+        label = FALSE,
+        cols = lineages_color_palette,
+        raster = FALSE,
+        shuffle = TRUE,
+        pt.size = 1
+        ) +
+  guides(color = guide_legend(override.aes = list(size = 5), ncol = 1)) +
+  labs(title="Cell lineages")
+gg_umap_clustering_cellsubtypes_cleaned
+
+pdf(file = paste0(path_r_figs, "/gg_umap_clustering_cellsubtypes_cleaned.pdf"), width =16, height =12)    
+print(gg_umap_clustering_cellsubtypes_cleaned)    
+dev.off()   
+```
+
+```{r fig.width=20, fig.height=5}
+# Clustering overview
+gg_umap_clustering_cellsubtypes_cleaned <- DimPlot(object = seurat_obj,
+        group.by = "cell_lineages",
+        split.by = "treatment",
+        label = FALSE,
+        cols = lineages_color_palette,
+        raster = FALSE,
+        pt.size = 0.25,
+        ncol = 5
+        ) +
+  guides(color = guide_legend(override.aes = list(size = 5), ncol = 1)) +
+  labs(title="Cell lineages")
+gg_umap_clustering_cellsubtypes_cleaned
+```
+
+```{r fig.width=10, fig.height=6}
+gg_cell_num <- dittoSeq::dittoBarPlot(seurat_obj, 
+                            "cell_lineages",
+                            group.by = "treatment",
+                            scale = "count",
+                            legend.show = FALSE,
+                            retain.factor.levels = TRUE,
+                            color.panel = lineages_color_palette)
+
+gg_cell_prop <- dittoSeq::dittoBarPlot(seurat_obj, 
+                             "cell_lineages",
+                             group.by = "treatment",
+                             scale = "percent",
+                            retain.factor.levels = TRUE,
+                             color.panel = lineages_color_palette)
+
+gg_cell_num + gg_cell_prop
+
+pdf(file = paste0(path_r_figs, "/gg_lineages_prop.pdf"), width =6, height =5)    
+print(gg_cell_prop)    
+dev.off()   
+```
+
+##  Cell-types
+```{r}
+cell_types_list <- c(# B
+                     "Immature B cells",
+                     "Mature B cells",
+                     "Plasma cells",
+                      # DCs
+                      "cDC1", "cDC2", "mregDCs", "mo-DCs","pDCs",
+                      # Monocytes/Macrophages
+                      "Classical Monocytes", "Arg1+ TAMs", "Ccl8+ TAMs", "Cycling Ccl8+ TAMs",
+                      # T Lymphocytes
+                      "Stem-like CD8 T cells",
+                      "Effector CD8 T cells",
+                      "Effector Memory CD8 T cells",
+                      "IFN-responder CD8 T cells",
+                      "Exhausted CD8 T cells",
+                      "Cycling CD8 T cells", 
+                      "Exhausted CD4 T cells",
+                      "Tregs", "Cycling Tregs", 
+                      "Th",
+                      "MAIT", 
+                      "g/dv2-17 cells",
+                      "NKT cells",
+                      # ILCs
+                      "CD27+CD11b- NK cells", "CD27-CD11b+ NK cells", "IFN-responder NK cells", "Cycling NK cells",
+                      "ILC1", "ILC2", 
+                      "Mature TANs", 
+                      "N2 TANs",
+                      "N1 TANs",
+                      "IFN-response TANs",
+                      "Mast cells")
+
+# Assign cell-types colors
+cells_color_palette <- c("Immature B cells" = "#ffbaba",
+                         "Mature B cells" ="#ff5252",
+                         "Plasma cells" = "#a70000",
+                        # DCs
+                        "cDC1" = "#52B788",
+                        "cDC2" = "#1B4332",
+                        "mregDCs" = "#4F772D",
+                        "mo-DCs" = "#80B918",
+                        "pDCs" = "#D8F3DC",
+                        # Monocytes/Macrophages
+                        "Classical Monocytes" = "#FF6000",
+                        "Arg1+ TAMs" = "#F4E409",
+                        "Ccl8+ TAMs" = "#583101",
+                        "Cycling Ccl8+ TAMs" = "#FFA500",
+                        # T Lymphocytes
+                        "Stem-like CD8 T cells" = "#89CFF0",
+                        "Effector Memory CD8 T cells" = "#1565C0",
+                        "Effector CD8 T cells" = "#1E90FF",
+                        "IFN-responder CD8 T cells"= "#003f88",
+                        "Exhausted CD8 T cells" = "#00BFFF",
+                        "Cycling CD8 T cells" = "#BFD7FF",
+                        "Exhausted CD4 T cells" = "#9C27B0", 
+                        "Tregs" = "#9D4EDD",
+                        "Cycling Tregs" = "#7B1FA2", 
+                        "Th"= "#D55AFF",
+                        "MAIT"= "#10002B", 
+                        "g/dv2-17 cells"= "#C2185B",
+                        "NKT cells"= "#F8C8DC",
+                        # ILCs
+                        "CD27+CD11b- NK cells"= "#6F4518",
+                        "CD27-CD11b+ NK cells"= "#C36F09", 
+                        "IFN-responder NK cells"= "#A47148", 
+                        "Cycling NK cells"= "#BC8A5F",
+                        "ILC1" = "#eed7a1",
+                        "ILC2" = "#fff4f1", 
+                         "Mature TANs" = "#D2D5D7", 
+                        "N2 TANs" = "#656B69",
+                        "N1 TANs" = "#454B47",
+                        "IFN-response TANs" = "#020202",
+                        "Mast cells" = "#132A13"
+                          )
+```
+
+```{r fig.width=16, fig.height=12}
+# Clustering overview
+gg_umap_clustering_cellsubtypes_cleaned <- DimPlot(object = seurat_obj,
+        group.by = "cell_types",
+        label = FALSE,
+        cols = cells_color_palette,
+        raster = FALSE,
+        shuffle = TRUE,
+        pt.size = 1
+        ) +
+  guides(color = guide_legend(override.aes = list(size = 5), ncol = 1)) +
+  labs(title="Celltypes")
+gg_umap_clustering_cellsubtypes_cleaned
+
+pdf(file = paste0(path_r_figs, "/gg_umap_clustering_cellsubtypes_cleaned.pdf"), width =16, height =12)    
+print(gg_umap_clustering_cellsubtypes_cleaned)    
+dev.off()   
+```
+
+```{r fig.width=20, fig.height=8}
+gg_cell_num <- dittoSeq::dittoBarPlot(seurat_obj, 
+                            "cell_types",
+                            group.by = "treatment",
+                            scale = "count",
+                            #legend.show = FALSE,
+                            retain.factor.levels = TRUE,
+                            color.panel = cells_color_palette)
+
+gg_cell_prop <- dittoSeq::dittoBarPlot(seurat_obj, 
+                             "cell_types",
+                             group.by = "treatment",
+                             scale = "percent",
+                            retain.factor.levels = TRUE,
+                             color.panel = cells_color_palette)
+
+gg_cell_num + gg_cell_prop
+
+
+pdf(file = paste0(path_r_figs, "/gg_celltypes_prop.pdf"), width =10, height =7)    
+print(gg_cell_prop)    
+dev.off()   
+```
+
+
+```{r fig.width=6, fig.height=5}
+for (lineage in list("Granulocytes", "DCs", "Monocytes/Macrophages", "T Lymphocytes", "B Lymphocytes","ILCs")) {
+  seurat_sub <- subset(seurat_obj, subset = cell_lineages == lineage)
+  
+  # Reorder & susbet
+  seurat_sub$cell_types <- as.factor(as.character(seurat_sub$cell_types))
+  filtered_cell_types_list <- cell_types_list[cell_types_list %in% unique(seurat_sub$cell_types)]
+  seurat_sub$cell_types <- factor(x = seurat_sub$cell_types, levels =  filtered_cell_types_list)
+  
+  gg_cell_num <- dittoSeq::dittoBarPlot(seurat_sub, 
+                            "cell_types",
+                            group.by = "treatment",
+                            scale = "count",
+                            #legend.show = FALSE,
+                            retain.factor.levels = TRUE,
+                            color.panel = cells_color_palette)
+  
+    print(gg_cell_num)
+  
+}
+```
+
+
+```{r fig.width=6, fig.height=5}
+for (lineage in list("Granulocytes", "DCs", "Monocytes/Macrophages", "B Lymphocytes", "T Lymphocytes", "ILCs")) {
+  seurat_sub <- subset(seurat_obj, subset = cell_lineages == lineage)
+  if (lineage == "Monocytes/Macrophages") {
+    lineage <- "Mono_Macro"
+  }
+  # Reorder & susbet
+  seurat_sub$cell_types <- as.factor(as.character(seurat_sub$cell_types))
+  filtered_cell_types_list <- cell_types_list[cell_types_list %in% unique(seurat_sub$cell_types)]
+  seurat_sub$cell_types <- factor(x = seurat_sub$cell_types, levels =  filtered_cell_types_list)
+  
+  gg_cell_prop <- dittoSeq::dittoBarPlot(seurat_sub, 
+                               "cell_types",
+                               group.by = "treatment",
+                               scale = "percent",
+                              retain.factor.levels = TRUE,
+                               color.panel = cells_color_palette)
+  
+  print(gg_cell_prop)
+  
+  pdf(file = paste0(path_r_figs, "/gg_", lineage, "_celltypes_prop.pdf"), width =6, height =5) 
+  print(gg_cell_prop)    
+  dev.off()   
+}
+```
+
+
+# Gene markers plot
+
+## Cell-types
+
+```{r}
+cells_gene_markers <- c(
+    # B Lymphocytes
+    "Cd79a", "Ms4a1", 
+    "Ighd","Cd40", "Ly6a",
+    "Jchain",
+    ######################################3ADD GENES!!!!  # Cycling    
+    "Clec9a", "Xcr1", "Cd24a", #"cDC1"
+    "Clec10a", "Mgl2", "Cd209d", #"cDC2"
+    "Fscn1", "Ccr7", "Tmem123", #"mregDCs"
+    "Cd209c", "Il1r2", #"Mo-DCs" "Itgal", 
+    "Siglech", "Ly6d", "Irf8", #"pDCs"
+    "Lyz2", "Plac8","Ms4a4c", #"Classical Monocytes"
+    "Cd68", "Apoe",
+    "Arg1", "Spp1", #"Arg1+ TAM"
+    "C1qa","Ccl8", #"Ccl8+ TAM" + "Cycling Ccl8+ TAM",
+    # T cells
+    "Cd3e", "Cd3d", "Cd8a", "Cd8b1", "Cd4", 
+   "Lef1", "Ccr7",  "Tcf7", #"Stem-like CD8 T cells"
+    "Xcl1", "Tnfrsf9", "Gpr183", #"EFF CD8",
+    "Tbx21", "Gzmk", "Cxcr3", #"EFFM CD8 T cells",
+    "Isg15", "Ifit3", #"IFN-responder CD8 T cells",
+    "Tox", "Havcr2", "Pdcd1","Lag3",  #"Exhausted CD8 T cells"  #"Exhausted CD4 T cells",
+    "Foxp3","Ctla4", #"Tregs" + "Cycling Tregs", 
+    "Icos", "Cd40lg", #"Th",
+    "Klra1",  #"MAIT", 
+    "Trdv4", "Il23r", "Il17a",   #"g/dv2-17 cells", 
+    "Nkg7",#"NKT cells",
+    # NK cells
+     "Klrb1c", "Klrc1", "Xcl1", "Eomes",
+    "Ctla2a", "Itgam", "Prf1", "Gzmb",  #"CD27+CD11b- NK cells", + "Cycling NK cells", #"CD27-CD11b+ NK cells"
+    "Ifng", "Ifi206", #"IFN+ NK cells"
+   "Itga1", "Rora", "Il7r", # ILC1
+     "Gata3","Cxcr6", #"ILC2"
+  # Neutrophils
+  "S100a8", "S100a9",
+  "Retnlg",
+    "Cxcl3", "S100a11",
+    "Ifit1", "Ifit3", "Cxcl10",
+    "Cd200r3", "Gata2",
+  "Stmn1",	"Top2a",	"Mki67"	
+  )
+
+cells_gene_markers <- cells_gene_markers[!duplicated(cells_gene_markers)]
+```
+
+
+```{r fig.width=18, fig.height=8}
+seurat_obj$cell_types <- factor(x = seurat_obj$cell_types, levels = rev(cell_types_list))
+
+dotplot_cells <- DotPlot(seurat_obj,
+        features = cells_gene_markers,
+        group.by = "cell_types",
+        #scale = TRUE,
+        #col.max = 3,
+        #col.min = 0,
+        cols = "RdYlBu",
+        dot.scale = 5) +
+  #coord_flip() +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust = 0.5, face = "italic"))
+
+dotplot_cells
+
+pdf(file = paste0(path_r_figs, "/dotplot_genemarkers_cells.pdf"), width =18, height =8)
+print(dotplot_cells)    
+dev.off()   
+```
+
+# Dotplots populations by lineage
+## T
+```{r fig.width=7, fig.height=5}
+Idents(seurat_obj) <- "cell_lineages"
+
+seurat_obj_T <- subset(seurat_obj, idents = "T Lymphocytes")
+
+T_cell_names <- c("Stem-like CD8 T cells",
+                  "Effector CD8 T cells",
+                  "Effector Memory CD8 T cells",
+                  "IFN-responder CD8 T cells",
+                  "Exhausted CD8 T cells",
+                  "Cycling CD8 T cells", 
+                  "Exhausted CD4 T cells",
+                  "Tregs", "Cycling Tregs", 
+                  "Th",
+                  "MAIT", 
+                  "g/dv2-17 cells",
+                  "NKT cells")
+
+seurat_obj_T$cell_types <- factor(x = seurat_obj_T$cell_types, levels = rev(T_cell_names))
+
+T_gene_markers <- c("Lef1", 
+                    "Grp183", "Tnfrsf9",
+                    "Gpr183",
+                    "Isg15",
+                    "Gzmb", "Prf1", "Tox", 
+                     "Foxp3",
+                    "Cd40lg", "Klra1",
+                    "Il23r",
+                    "Nkg7",
+                    "Mki67")
+
+dotplot_T_cells <- DotPlot(seurat_obj_T,
+        features = T_gene_markers,
+        group.by = "cell_types",
+        scale = TRUE,
+        cols = "RdYlBu",
+        dot.scale = 4) +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust = 0.5, face = "italic")
+        )
+
+dotplot_T_cells
+
+pdf(file = paste0(path_r_figs, "/dotplot_genemarkers_TLymphocytes.pdf"), width =7, height =5)
+print(dotplot_T_cells)    
+dev.off() 
+```
+
+## Mono/Macro
+```{r fig.width=5, fig.height=3}
+Idents(seurat_obj) <- "cell_lineages"
+
+seurat_obj_MoMa <- subset(seurat_obj, idents = "Monocytes/Macrophages")
+
+MoMa_cell_names <- c("Classical Monocytes", "Arg1+ TAMs", "Ccl8+ TAMs", "Cycling Ccl8+ TAMs")
+
+seurat_obj_MoMa$cell_types <- factor(x = seurat_obj_MoMa$cell_types, levels = rev(MoMa_cell_names))
+
+MoMa_gene_markers <- c("Lyz2", "Arg1", "Ccl8", "Mki67")
+
+dotplot_MoMa_cells <- DotPlot(seurat_obj_MoMa,
+        features = MoMa_gene_markers,
+        group.by = "cell_types",
+        scale = TRUE,
+        cols = "RdYlBu",
+        dot.scale = 4) +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust = 0.5, face = "italic")
+        )
+
+dotplot_MoMa_cells
+
+pdf(file = paste0(path_r_figs, "/dotplot_genemarkers_MonoMacro.pdf"), width =5, height =3)
+print(dotplot_MoMa_cells)    
+dev.off() 
+```
+
+## DC
+```{r fig.width=5, fig.height=3}
+Idents(seurat_obj) <- "cell_lineages"
+
+seurat_obj_DC <- subset(seurat_obj, idents = "DCs")
+
+DC_cell_names <- c("cDC1", "cDC2", "mregDCs", "mo-DCs","pDCs")
+
+seurat_obj_DC$cell_types <- factor(x = seurat_obj_DC$cell_types, levels = rev(DC_cell_names))
+
+DC_gene_markers <- c("Clec9a", "Clec10a", "Fscn1","Cd209c", "Siglech")
+
+dotplot_DC_cells <- DotPlot(seurat_obj_DC,
+        features = DC_gene_markers,
+        group.by = "cell_types",
+        scale = TRUE,
+        cols = "RdYlBu",
+        dot.scale = 4) +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust = 0.5, face = "italic")
+        )
+
+dotplot_DC_cells
+
+pdf(file = paste0(path_r_figs, "/dotplot_genemarkers_DC.pdf"), width =5, height =3)
+print(dotplot_DC_cells)    
+dev.off() 
+```
+
+## Granulocytes
+```{r fig.width=5, fig.height=3}
+Idents(seurat_obj) <- "cell_lineages"
+
+seurat_obj_Granu <- subset(seurat_obj, idents = "Granulocytes")
+
+Granu_cell_names <- c("Mature TANs", 
+                      "N2 TANs",
+                      "N1 TANs",
+                      "IFN-response TANs",
+                      "Mast cells")
+
+seurat_obj_Granu$cell_types <- factor(x = seurat_obj_Granu$cell_types, levels = rev(Granu_cell_names))
+
+Granu_gene_markers <- c("Retnlg",
+    "Cxcl3", "S100a11",
+    "Ifit1", 
+    "Cd200r3")
+
+dotplot_Granu_cells <- DotPlot(seurat_obj_Granu,
+        features = Granu_gene_markers,
+        group.by = "cell_types",
+        scale = TRUE,
+        cols = "RdYlBu",
+        dot.scale = 4) +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust = 0.5, face = "italic")
+        )
+
+dotplot_Granu_cells
+
+pdf(file = paste0(path_r_figs, "/dotplot_genemarkers_Granulocytes.pdf"), width =5, height =3)
+print(dotplot_Granu_cells)    
+dev.off() 
+```
+
+# Session Info
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,650 @@
+---
+title: "Final Annotation"
+author: "Laura Jiménez Gracia"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+```
+
+# Introduction
+
+## Objective
+In this Rmarkdown document, we are going to merge cell type identities annotated by independent cell-lineage analysis into a single one.
+
+# Pre-processing
+## Libraries
+```{r warning = FALSE, message = FALSE}
+library(tidyverse)
+library(Seurat)
+library(DT)
+library(grid)
+library(RColorBrewer)
+library(scales)
+library(gtable)
+```
+
+## Parameters
+Here we will define and load objects and functions that will be used throughout the document.
+```{r}
+# Paths
+path_project_metadata <- here::here("01_cellranger_mapping/data/VEIGAEST_metadata.csv")
+
+path_r_objects <- here::here("03_clustering_annotation/results/R_objects")
+path_r_figs <- here::here("03_clustering_annotation/results/figs")
+path_r_tables <- here::here("03_clustering_annotation/results/tables")
+
+# Functions
+source(here::here("bin/utils.R"))
+`%ni%` <- Negate(`%in%`)
+
+# Parameters
+confounder_variables <- c("treatment")
+confounder_names <- c("Treatment")
+
+qc_metrics <-  c("nCount_RNA", "nFeature_RNA", "pct_mt", "pct_rb", "S.Score", "G2M.Score")
+
+# Color palette
+color_palette <- Polychrome::createPalette(32, c("#fc6060", "#74f774", "#7c7cfc"))
+names(color_palette) <- NULL
+#Polychrome::swatch(color_palette)
+```
+
+## Load metadata
+The data used in this Rmarkdown document comes from **VEIGAEST** dataset.
+```{r}
+# Load all metadata information
+metadata <- read.csv(path_project_metadata)
+metadata <- metadata %>% filter(type == "cDNA")
+print("Libraries metadata")
+DT::datatable(metadata, options = list(scrollX = TRUE))
+```
+
+# Load data
+
+## Level 1
+```{r}
+# Load Seurat object -- ANNOT LEVEL 1
+seurat_obj <- readRDS(paste0(path_r_objects, "/VEIGAEST_clustering_level1_annotation.rds"))
+
+# Diet Seurat object
+seurat_obj <- DietSeurat(
+  seurat_obj,
+  counts = TRUE,
+  data = TRUE,
+  scale.data = FALSE,
+  assays = "RNA",
+  dimreducs = c("pca", "umap", "harmony"),
+  graphs = c("RNA_nn", "RNA_snn"))
+
+seurat_obj
+```
+
+```{r}
+table(seurat_obj$annot_level1)
+```
+
+## Level 2
+```{r}
+annotations_full <- data.frame(annot_level1 = character(),
+                               annot_level2 = character()
+)
+
+level1_list <- list("Myeloid cells", "T Lymphocytes", "NK cells", "B Lymphocytes", "Neutrophils")
+level1_filenames <- c("myeloidcells", "Tlymphocytes", "NKcells", "Blymphocytes", "neutrophils")
+
+# Load & add annotations & merge all together
+for (i in 1:length(level1_list)) {
+  annot1 <- level1_list[i]
+  filename <- level1_filenames[i]
+  file_path <- paste0(path_r_objects, "/VEIGAEST_", filename, "_annotation_level2.rds")
+  # loading annotations
+  annot <- readRDS(file_path)
+  # adding annot_level2 labels
+  annotations_full <- rbind(annotations_full, annot)
+}
+annotations_full <- annotations_full["annot_level2"]
+```
+
+
+```{r}
+# Add metadata to seurat object
+seurat_obj <- AddMetaData(seurat_obj, metadata = annotations_full)
+
+# Replace NA's by level1
+seurat_obj$annot_level2[is.na(seurat_obj$annot_level2)] <- seurat_obj$annot_level1[is.na(seurat_obj$annot_level2)]
+
+table(seurat_obj$annot_level2)
+length(unique(seurat_obj$annot_level2))
+```
+
+
+## Level 3
+```{r}
+annotations_full <- data.frame(annot_level1 = factor(),
+                               annot_level2 = factor(),
+                               annot_level3 = factor()
+)
+
+lineage_list <- list("Myeloid cells", "T Lymphocytes", "NK cells", "Neutrophils") 
+lineage_filenames <- c("myeloidcells", "Tlymphocytes", "NKcells", "neutrophils")
+
+# Load & add annotations & merge all together
+for (i in 1:length(lineage_list)) {
+  lineage <- lineage_list[[i]]
+  filename <- lineage_filenames[i]
+  file_path <- paste0(path_r_objects, "/VEIGAEST_", filename, "_annotation_level3.rds")
+  # loading annotations
+  annot <- readRDS(file_path)
+  # adding annot_level3 labels
+  annotations_full <- rbind(annotations_full, annot)
+}
+
+annotations_full <- annotations_full["annot_level3"]
+```
+
+
+```{r}
+# Add metadata to seurat object
+seurat_obj <- AddMetaData(seurat_obj, metadata = annotations_full)
+
+# Replace level3 NA by level2 values
+#seurat_obj$annot_level3 <- as.factor(seurat_obj$annot_level3)
+seurat_obj$annot_level3[is.na(seurat_obj$annot_level3)] <- seurat_obj$annot_level2[is.na(seurat_obj$annot_level3)]
+
+table(seurat_obj$annot_level3)
+length(unique(seurat_obj$annot_level3))
+```
+
+## Level 4
+```{r}
+annotations_full <- data.frame(annot_level1 = factor(),
+                               annot_level2 = factor(),
+                               annot_level3 = factor(),
+                               annot_level4 = factor()
+)
+
+lineage_list <- list("Myeloid cells")
+lineage_filenames <- c("myeloidcells")
+
+# Load & add annotations & merge all together
+for (i in 1:length(lineage_list)) {
+  lineage <- lineage_list[[i]]
+  filename <- lineage_filenames[i]
+  file_path <- paste0(path_r_objects, "/VEIGAEST_", filename, "_annotation_level4.rds")
+  # loading annotations
+  annot <- readRDS(file_path)
+  # adding annot_level3 labels
+  annotations_full <- rbind(annotations_full, annot)
+}
+
+annotations_full <- annotations_full["annot_level4"]
+```
+
+
+```{r}
+# Add metadata to seurat object
+seurat_obj <- AddMetaData(seurat_obj, metadata = annotations_full)
+
+# Replace level3 NA by level2 values
+#seurat_obj$annot_level3 <- as.factor(seurat_obj$annot_level3)
+seurat_obj$annot_level4[is.na(seurat_obj$annot_level4)] <- seurat_obj$annot_level3[is.na(seurat_obj$annot_level4)]
+
+table(seurat_obj$annot_level4)
+length(unique(seurat_obj$annot_level4))
+```
+
+# Cell naming & grouping
+```{r}
+seurat_obj
+```
+
+## CELL LINEAGES
+```{r}
+seurat_obj$cell_lineages <- as.character(seurat_obj$annot_level4)
+
+seurat_obj$cell_lineages[seurat_obj$annot_level4 %in% c("Immature B cells", "Mature B cells", "Plasma cells")] <- "B Lymphocytes"
+seurat_obj$cell_lineages[seurat_obj$annot_level4 %in% c("N2 TANs","N1 TANs","IFN-response TANs","Mature TANs", "Mast cells")] <- "Granulocytes"
+
+seurat_obj$cell_lineages[seurat_obj$annot_level4 %in% c("g/dv2-17 cells",  "Tregs", "Th", "Effector Memory CD8 T cells",
+                                                        "MAIT", "Exhausted CD4 T cells", "Cycling CD8 T cells", 
+                                                        "Stem-like CD8 T cells", "Exhausted CD8 T cells", "NKT cells",
+                                                        "Cycling Tregs", "IFN-responder CD8 T cells",
+                                                        "Effector CD8 T cells")] <- "T Lymphocytes"
+seurat_obj$cell_lineages[seurat_obj$annot_level4 %in% c("Arg1+ TAMs", "Ccl8+ TAMs", "Cycling Ccl8+ TAMs",
+                                                        "Classical Monocytes")] <- "Monocytes/Macrophages"
+seurat_obj$cell_lineages[seurat_obj$annot_level4 %in% c("pDCs","cDC1", "cDC2", "mregDCs", "mo-DCs")] <- "DCs"
+seurat_obj$cell_lineages[seurat_obj$annot_level4 %in% c("CD27+CD11b- NK cells", "ILC2", "ILC1", "CD27-CD11b+ NK cells",
+                                                        "Cycling NK cells", "IFN-responder NK cells" )] <- "ILCs"
+
+
+seurat_obj$cell_lineages <- as.factor(seurat_obj$cell_lineages)
+table(seurat_obj$cell_lineages)
+```
+
+## CELL TYPES
+```{r}
+seurat_obj$cell_types <- as.character(seurat_obj$annot_level4)
+seurat_obj$cell_types <- as.factor(seurat_obj$annot_level4)
+table(seurat_obj$cell_types)
+length(unique(seurat_obj$cell_types))
+```
+
+## Remove annotation slots
+```{r}
+seurat_obj$annot_level1 <- NULL
+seurat_obj$annot_level2 <- NULL
+seurat_obj$annot_level3 <- NULL
+seurat_obj$annot_level4 <- NULL
+```
+
+# Save data
+
+```{r}
+# Save metadata
+saveRDS(seurat_obj@meta.data, paste0(path_r_objects, "/VEIGAEST_metadata_full.rds"))
+write.csv(seurat_obj@meta.data, paste0(path_r_tables, "/VEIGAEST_metadata_full.csv"))
+openxlsx::write.xlsx(seurat_obj@meta.data, paste0(path_r_tables, "/VEIGAEST_metadata_full.xlsx"))
+
+# Save annotated Seurat object
+saveRDS(seurat_obj, paste0(path_r_objects, "/VEIGAEST_clustering_annotation_full.rds"))
+#seurat_obj <- readRDS(paste0(path_r_objects, "/VEIGAEST_clustering_annotation_full.rds"))
+```
+
+# Remove uninteresting cells
+```{r}
+Idents(seurat_obj) <- "cell_lineages"
+cells_to_remove <- c("Doublets", "CD45- cells", "LowQuality_cells")
+seurat_obj_cleaned <- subset(seurat_obj, idents = cells_to_remove, invert = TRUE)
+seurat_obj_cleaned
+rm(seurat_obj)
+```
+
+## Reorder factors
+```{r}
+seurat_obj_cleaned$cell_lineages <- as.factor(as.character(seurat_obj_cleaned$cell_lineages))
+
+# Reordering lineages
+cell_lineages_list <- c("B Lymphocytes", "DCs", "Monocytes/Macrophages", "T Lymphocytes", "ILCs", "Granulocytes"
+                                        )
+seurat_obj_cleaned$cell_lineages <- factor(x = seurat_obj_cleaned$cell_lineages,
+                                        levels = cell_lineages_list)
+
+table(seurat_obj_cleaned$cell_lineages)
+length(unique(seurat_obj_cleaned$cell_lineages))
+```
+
+
+```{r}
+seurat_obj_cleaned$cell_types <- as.factor(as.character(seurat_obj_cleaned$cell_types))
+
+# Reordering cells
+
+cell_types_list <- c(# B
+                     "Immature B cells",
+                     "Mature B cells",
+                     "Plasma cells",
+                      # DCs
+                      "cDC1", "cDC2", "mregDCs", "mo-DCs","pDCs",
+                      # Monocytes/Macrophages
+                      "Classical Monocytes", "Arg1+ TAMs", "Ccl8+ TAMs", "Cycling Ccl8+ TAMs",
+                      # T Lymphocytes
+                      "Stem-like CD8 T cells",
+                      "Effector CD8 T cells",
+                      "Effector Memory CD8 T cells",
+                      "IFN-responder CD8 T cells",
+                      "Exhausted CD8 T cells",
+                      "Cycling CD8 T cells", 
+                      "Exhausted CD4 T cells",
+                      "Tregs", "Cycling Tregs", 
+                      "Th",
+                      "MAIT", 
+                      "g/dv2-17 cells",
+                      "NKT cells",
+                      # ILCs
+                      "CD27+CD11b- NK cells", "CD27-CD11b+ NK cells", "IFN-responder NK cells", "Cycling NK cells",
+                      "ILC1", "ILC2", 
+                      "Mature TANs", 
+                      "N2 TANs",
+                      "N1 TANs",
+                      "IFN-response TANs",
+                      "Mast cells")
+seurat_obj_cleaned$cell_types <- factor(x = seurat_obj_cleaned$cell_types,
+                                        levels =  cell_types_list
+                                          )
+
+table(seurat_obj_cleaned$cell_types)
+length(unique(seurat_obj_cleaned$cell_types))
+```
+
+## Dimensionality reduction
+
+```{r}
+seurat_obj_cleaned <- seurat_obj_cleaned %>% 
+  FindVariableFeatures(nfeatures = 3000) %>% 
+  ScaleData() %>% 
+  RunPCA() %>% 
+  harmony::RunHarmony(group.by.vars = "gem_id") %>%
+  RunUMAP(reduction = "harmony", dims = 1:20)
+```
+
+
+
+# Data exploration
+
+## Lineages
+```{r}
+# Assign lineages colors
+lineages_color_palette <- c("B Lymphocytes" = "#F94144",
+                            "DCs" = "#90BE6D",
+                            "Monocytes/Macrophages" = "#F9844A",
+                            "T Lymphocytes" = "#277DA1",
+                            "ILCs" = "#6F4518", 
+                            "Granulocytes" = "#132A13"
+)
+```
+
+
+```{r fig.width=16, fig.height=12}
+# Clustering overview
+gg_umap_clustering_cellsubtypes_cleaned <- DimPlot(object = seurat_obj_cleaned,
+        group.by = "cell_lineages",
+        label = FALSE,
+        cols = lineages_color_palette,
+        raster = FALSE,
+        shuffle = TRUE,
+        pt.size = 1
+        ) +
+  guides(color = guide_legend(override.aes = list(size = 5), ncol = 1)) +
+  labs(title="Cell lineages - Cleaned")
+gg_umap_clustering_cellsubtypes_cleaned
+
+ggsave(filename = paste0(path_r_figs, "/VEIGAEST_clustering_annotationlineages_full_cleaned_umap.png"),
+       plot = gg_umap_clustering_cellsubtypes_cleaned)
+```
+
+```{r fig.width=20, fig.height=5}
+# Clustering overview
+gg_umap_clustering_cellsubtypes_cleaned <- DimPlot(object = seurat_obj_cleaned,
+        group.by = "cell_lineages",
+        split.by = "treatment",
+        label = FALSE,
+        cols = lineages_color_palette,
+        raster = FALSE,
+        pt.size = 0.25,
+        ncol = 5
+        ) +
+  guides(color = guide_legend(override.aes = list(size = 5), ncol = 1)) +
+  labs(title="Cell lineages - Cleaned")
+gg_umap_clustering_cellsubtypes_cleaned
+
+ggsave(filename = paste0(path_r_figs, "/VEIGAEST_clustering_annotationlineages_full_cleaned_SPLIT_umap.png"),
+       plot = gg_umap_clustering_cellsubtypes_cleaned)
+```
+
+```{r fig.width=10, fig.height=6}
+gg_cell_num <- dittoSeq::dittoBarPlot(seurat_obj_cleaned, 
+                            "cell_lineages",
+                            group.by = "treatment",
+                            scale = "count",
+                            legend.show = FALSE,
+                            retain.factor.levels = TRUE,
+                            color.panel = lineages_color_palette)
+
+gg_cell_prop <- dittoSeq::dittoBarPlot(seurat_obj_cleaned, 
+                             "cell_lineages",
+                             group.by = "treatment",
+                             scale = "percent",
+                            retain.factor.levels = TRUE,
+                             color.panel = lineages_color_palette)
+
+gg_cell_num + gg_cell_prop
+```
+
+##  Cell-types
+```{r}
+
+# Assign cell-types colors
+cells_color_palette <- c("Immature B cells" = "#ffbaba",
+                         "Mature B cells" ="#ff5252",
+                         "Plasma cells" = "#a70000",
+                        # DCs
+                        "cDC1" = "#52B788",
+                        "cDC2" = "#1B4332",
+                        "mregDCs" = "#4F772D",
+                        "mo-DCs" = "#80B918",
+                        "pDCs" = "#D8F3DC",
+                        # Monocytes/Macrophages
+                        "Classical Monocytes" = "#FF6000",
+                        "Arg1+ TAMs" = "#F4E409",
+                        "Ccl8+ TAMs" = "#583101",
+                        "Cycling Ccl8+ TAMs" = "#FFA500",
+                        # T Lymphocytes
+                        "Stem-like CD8 T cells" = "#89CFF0",
+                        "Effector Memory CD8 T cells" = "#1565C0",
+                        "Effector CD8 T cells" = "#6A5ACD",
+                        "IFN-responder CD8 T cells"= "#003f88",
+                        "Exhausted CD8 T cells" = "#2196F3",
+                        "Cycling CD8 T cells" = "#BFD7FF",
+                        "Exhausted CD4 T cells" = "#9C27B0", 
+                        "Tregs" = "#9D4EDD",
+                        "Cycling Tregs" = "#7B1FA2", 
+                        "Th"= "#C2185B",
+                        "MAIT"= "#10002B", 
+                        "g/dv2-17 cells"= "#D55AFF",
+                        "NKT cells"= "#F8C8DC",
+                        # ILCs
+                        "CD27+CD11b- NK cells"= "#6F4518",
+                        "CD27-CD11b+ NK cells"= "#C36F09", 
+                        "IFN-responder NK cells"= "#A47148", 
+                        "Cycling NK cells"= "#BC8A5F",
+                        "ILC1" = "#eed7a1",
+                        "ILC2" = "#fff4f1", 
+                         "Mature TANs" = "#D2D5D7", 
+                        "N2 TANs" = "#656B69",
+                        "N1 TANs" = "#454B47",
+                        "IFN-response TANs" = "#020202",
+                        "Mast cells" = "#132A13"
+                          )
+```
+
+```{r fig.width=16, fig.height=12}
+# Clustering overview
+gg_umap_clustering_cellsubtypes_cleaned <- DimPlot(object = seurat_obj_cleaned,
+        group.by = "cell_types",
+        label = FALSE,
+        cols = cells_color_palette,
+        raster = FALSE,
+        shuffle = TRUE,
+        pt.size = 1
+        ) +
+  guides(color = guide_legend(override.aes = list(size = 5), ncol = 1)) +
+  labs(title="Celltypes - Cleaned")
+gg_umap_clustering_cellsubtypes_cleaned
+
+ggsave(filename = paste0(path_r_figs, "/VEIGAEST_clustering_annotationcells_full_cleaned_umap.png"),
+       plot = gg_umap_clustering_cellsubtypes_cleaned)
+```
+
+```{r fig.width=20, fig.height=8}
+gg_cell_num <- dittoSeq::dittoBarPlot(seurat_obj_cleaned, 
+                            "cell_types",
+                            group.by = "treatment",
+                            scale = "count",
+                            #legend.show = FALSE,
+                            retain.factor.levels = TRUE,
+                            color.panel = cells_color_palette)
+
+gg_cell_prop <- dittoSeq::dittoBarPlot(seurat_obj_cleaned, 
+                             "cell_types",
+                             group.by = "treatment",
+                             scale = "percent",
+                            retain.factor.levels = TRUE,
+                             color.panel = cells_color_palette)
+
+gg_cell_num + gg_cell_prop
+```
+
+
+```{r fig.width=6, fig.height=5}
+for (lineage in list("Granulocytes", "DCs", "Monocytes/Macrophages", "T Lymphocytes", "B Lymphocytes","ILCs")) {
+  seurat_sub <- subset(seurat_obj_cleaned, subset = cell_lineages == lineage)
+  
+  # Reorder & susbet
+  seurat_sub$cell_types <- as.factor(as.character(seurat_sub$cell_types))
+  filtered_cell_types_list <- cell_types_list[cell_types_list %in% unique(seurat_sub$cell_types)]
+  seurat_sub$cell_types <- factor(x = seurat_sub$cell_types, levels =  filtered_cell_types_list)
+  
+  gg_cell_num <- dittoSeq::dittoBarPlot(seurat_sub, 
+                            "cell_types",
+                            group.by = "treatment",
+                            scale = "count",
+                            #legend.show = FALSE,
+                            retain.factor.levels = TRUE,
+                            color.panel = cells_color_palette)
+  
+    print(gg_cell_num)
+}
+```
+
+
+```{r fig.width=6, fig.height=5}
+for (lineage in list("Granulocytes", "DCs", "Monocytes/Macrophages", "B Lymphocytes", "T Lymphocytes", "ILCs")) {
+  seurat_sub <- subset(seurat_obj_cleaned, subset = cell_lineages == lineage)
+  # Reorder & susbet
+  seurat_sub$cell_types <- as.factor(as.character(seurat_sub$cell_types))
+  filtered_cell_types_list <- cell_types_list[cell_types_list %in% unique(seurat_sub$cell_types)]
+  seurat_sub$cell_types <- factor(x = seurat_sub$cell_types, levels =  filtered_cell_types_list)
+  
+  gg_cell_prop <- dittoSeq::dittoBarPlot(seurat_sub, 
+                               "cell_types",
+                               group.by = "treatment",
+                               scale = "percent",
+                              retain.factor.levels = TRUE,
+                               color.panel = cells_color_palette)
+  
+  print(gg_cell_prop)
+
+}
+```
+
+
+# Save data CLEANED
+```{r}
+# Save metadata
+saveRDS(seurat_obj_cleaned@meta.data, paste0(path_r_objects, "/VEIGAEST_metadata_full_cleaned.rds"))
+openxlsx::write.xlsx(seurat_obj_cleaned@meta.data, paste0(path_r_tables, "/VEIGAEST_metadata_full_cleaned.xlsx"))
+write.csv(seurat_obj_cleaned@meta.data, paste0(path_r_tables, "/VEIGAEST_metadata_full_cleaned.csv"))
+
+# Save annotated Seurat object
+saveRDS(seurat_obj_cleaned, paste0(path_r_objects, "/VEIGAEST_clustering_annotation_full_cleaned.rds"))
+#seurat_obj_cleaned <- readRDS(paste0(path_r_objects, "/VEIGAEST_clustering_annotation_full_cleaned.rds"))
+```
+
+Convert to H5AD format, so downstream analysis can also be run with Scanpy.
+```{r}
+# Work around to avoid weird problem when saving it as h5ad format
+seurat_obj_manual <- CreateSeuratObject(counts = seurat_obj_cleaned@assays$RNA@counts, 
+                                        assay = "RNA", 
+                                        meta.data = seurat_obj_cleaned@meta.data)
+# Keep 2D plotting
+seurat_obj_manual@reductions$umap <- seurat_obj_cleaned@reductions$umap
+
+# Modification to ensure it will be readable as AnnData object
+# loop over all columns and check if they are numeric
+cols_num <- sapply(seurat_obj_manual@meta.data, is.numeric)
+# convert non-numeric columns to character type
+seurat_obj_manual@meta.data[, !cols_num] <- lapply(seurat_obj_manual@meta.data[, !cols_num], as.character)
+
+intermediate_h5_file_path <- paste0(path_r_objects, "/VEIGAEST_clustering_annotation_full_cleaned.h5Seurat")
+# Convert-seurat-to-anndata-object
+SeuratDisk::SaveH5Seurat(seurat_obj_manual, filename = intermediate_h5_file_path)
+
+# Then, convert the h5 file into an AnnData object
+SeuratDisk::Convert(intermediate_h5_file_path, dest = "h5ad", overwrite = TRUE)
+
+# Remove Seurat h5 intermediate object
+base::system2('rm', args = intermediate_h5_file_path)
+```
+
+
+# Gene markers plot
+
+## Cell-types
+
+```{r}
+cells_gene_markers <- c(
+    # B Lymphocytes
+    "Cd79a", "Ms4a1", 
+    "Ighd","Cd40", "Ly6a",
+    "Jchain",
+    ######################################3ADD GENES!!!!  # Cycling    
+    "Clec9a", "Xcr1", "Cd24a", #"cDC1"
+    "Clec10a", "Mgl2", "Cd209d", #"cDC2"
+    "Fscn1", "Ccr7", "Tmem123", #"mregDCs"
+    "Il1r2", "Cd209c", #"Mo-DCs" "Itgal", 
+    "Siglech", "Ly6d", "Irf8", #"pDCs"
+    "Plac8", "Lyz2", "Ms4a4c", #"Classical Monocytes"
+    "Cd68", "Apoe", #"M0 Macrophages"
+    "Arg1", "Spp1", #"Arg1+ TAM"
+    "C1qa","Ccl8", #"Ccl8+ TAM" + "Cycling Ccl8+ TAM",
+    # T cells
+    "Cd3e", "Cd3d", "Cd8a", "Cd8b1", "Cd4", 
+    "Ccr7", "Lef1", "Tcf7", #"Stem-like CD8 T cells"
+    "Prdm1", "Tbx21", "Gzmk", "Cx3cr1", #"EFFM CD8 T cells",
+    "Xcl1", "Tnfrsf9", "", #"EFF CD8",
+    "Isg15", "Ifit3", #"IFN-responder CD8 T cells",
+    "Havcr2", "Tox", "Lag3", "Pdcd1",  #"Exhausted CD8 T cells" + "Cycling exhausted CD8+ T cells",  #"Exhausted CD4 T cells",
+    "Foxp3","Ctla4", #"Tregs" + "Cycling Tregs", 
+    "Icos", "Cd40lg", "Il6ra", #"Th",
+    "Klra1",  #"MAIT", 
+    "Trdv4", "Il23r", "Il17a",   #"g/dv2-17 cells", 
+    #"NKT cells",
+    # NK cells
+     "Klrb1c", "Klrc1", "Xcl1", "Eomes",
+    "Ctla2a", "Itgam", "Prf1", "Gzmb",  #"CD27+CD11b- NK cells", + "Cycling NK cells", #"CD27-CD11b+ NK cells"
+    "Ifng", "Ifi206", #"IFN+ NK cells"
+   "Itga1", "Rora", "Il7r", # ILC1
+     "Gata3","Cxcr6", #"ILC2"
+  # Neutrophils
+  "S100a8", "S100a9",
+  "Retnlg",
+    "Cxcl3", "S100a11",
+    "Ifit1", "Ifit3", "Cxcl10",
+    "Cd200r3", "Gata2",
+  "Stmn1",	"Top2a",	"Mki67"	
+  )
+
+cells_gene_markers <- cells_gene_markers[!duplicated(cells_gene_markers)]
+```
+
+
+```{r fig.width=18, fig.height=8}
+dotplot_cells <- DotPlot(seurat_obj_cleaned,
+        features = cells_gene_markers,
+        group.by = "cell_types",
+        #scale = TRUE,
+        #col.max = 3,
+        #col.min = 0,
+        cols = "RdYlBu",
+        dot.scale = 5) +
+  #coord_flip() +
+  theme(axis.text.x = element_text(angle=90, hjust = 1, vjust = 0.5, face = "italic"))
+
+dotplot_cells
+
+ggsave(filename = paste0(path_r_figs, "/VEIGAEST_annotationcells_full_genemarkers__dotplot.png"),
+       plot = dotplot_cells)
+```
+
+# Session Info
+```{r}
+sessionInfo()
+```
