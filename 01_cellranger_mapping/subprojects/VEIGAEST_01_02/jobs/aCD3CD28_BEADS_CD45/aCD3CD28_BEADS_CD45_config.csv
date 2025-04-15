@@ -1,0 +1,13 @@
+[gene-expression]
+reference,/scratch_isilon/groups/singlecell/shared/data/references/refdata-gex-GRCm39-2024-A
+create-bam,true
+chemistry,SC5P-R2-v3
+expect-cells,10000
+no-secondary,true
+[vdj]
+reference,/scratch_isilon/groups/singlecell/shared/data/references/refdata-cellranger-vdj-GRCm38-alts-ensembl-7.0.0
+[libraries]
+fastq_id,fastqs,feature_types
+aCD3CD28_BEADS_CD45,/scratch_isilon/groups/singlecell/ljimenez/projects/VEIGAEST/01_cellranger_mapping/subprojects/VEIGAEST_01_02/jobs/aCD3CD28_BEADS_CD45/fastq/cDNA,Gene Expression
+aCD3CD28_BEADS_CD45_VDJ-T,/scratch_isilon/groups/singlecell/ljimenez/projects/VEIGAEST/01_cellranger_mapping/subprojects/VEIGAEST_01_02/jobs/aCD3CD28_BEADS_CD45/fastq/VDJ-T,VDJ-T
+
