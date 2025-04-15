@@ -1,0 +1,791 @@
+---
+title: "Combine TCR with GEX data"
+author: "Laura Jiménez Gracia"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+
+#library(BiocStyle)
+#library(scater)
+library(tidyverse)
+library(Seurat)
+suppressMessages(library(scRepertoire))
+```
+
+scRepertoire is designed to take filter contig outputs from the 10x Genomics Cell Ranger pipeline, process that data to assign clonotype based on two TCR chains and analyze the clonotype dynamics. The latter can be separated into 1) clonotype-only analysis functions, such as unique clonotypes or clonal space quantification, and 2) interaction with mRNA expression data using Seurat or SingleCellExperiment packages.
+
+https://www.borch.dev/uploads/vignette/vignette
+
+## Parameters
+Here we will define and load objects and functions that will be used throughout the document.
+```{r}
+# Paths
+path_project_metadata <- here::here("01_cellranger_mapping/data/VEIGAEST_metadata.csv")
+
+path_r_GEXobjects <- here::here("03_clustering_annotation/results/R_objects")
+path_r_objects <- here::here("05_TCR_analysis/results/R_objects")
+path_r_figs <- here::here("05_TCR_analysis/results/figs")
+path_r_tables <- here::here("05_TCR_analysis/results/tables")
+
+# Functions
+#source(here::here("bin/utils.R"))
+```
+
+## Load data
+The data used in this Rmarkdown document comes from **VEIGAEST** dataset.
+```{r}
+# Load TCR data
+combined.TCR <- readRDS(paste0(path_r_objects, "/VEIGAEST_scRepertoire_combineTCR_ContigsClones_full.rds"))
+```
+
+```{r}
+# Load GEX data
+seurat_obj <- readRDS(paste0(path_r_GEXobjects, "/VEIGAEST_clustering_annotation_full_cleaned.rds"))
+seurat_obj
+```
+
+## Filter data
+```{r}
+Idents(seurat_obj) <- "cell_lineages"
+seurat_obj <- subset(seurat_obj, idents = c("T Lymphocytes"))
+Idents(seurat_obj) <- "cell_types"
+seurat_obj <- subset(seurat_obj, idents = c("g/dv2-17 cells"), invert = TRUE)
+seurat_obj
+
+# Remove condition
+Idents(seurat_obj) <- "treatment"
+seurat_obj <- subset(seurat_obj, idents = "BACB", invert = TRUE)
+seurat_obj$treatment <- as.factor(as.character(seurat_obj$treatment))
+seurat_obj$treatment <- factor(x = seurat_obj$treatment, levels = c("PBS", "aCD3CD28_BEADS", "BACT"))
+Idents(seurat_obj) <- "cell_types"
+seurat_obj
+```
+```{r}
+table(seurat_obj$treatment)
+```
+
+
+```{r}
+seurat_cellnames <- colnames(seurat_obj)
+
+sapply(combined.TCR, function(df) c(rows = nrow(df)))
+
+combined.TCR_filtered <- combined.TCR[!names(combined.TCR) %in% "BACB_CD45"]
+sapply(combined.TCR_filtered, function(df) c(rows = nrow(df)))
+
+names(combined.TCR_filtered) <- gsub("PBS_CD45", "aaPBS_CD45", names(combined.TCR_filtered))
+
+# Subset each dataframe in the list
+combined.TCR_filtered <- lapply(combined.TCR_filtered, function(df) {
+  df <- df[df$barcode %in% seurat_cellnames, ]
+  df
+})
+
+sapply(combined.TCR_filtered, function(df) c(rows = nrow(df)))
+```
+
+## Scatter
+```{r tidy = FALSE}
+# c("aCD3CD28_BEADS_CD45", "BACT_CD45", "BACB_CD45", "PBS_CD45")
+
+gg_scatter <- scatterClonotype(combined.TCR_filtered, 
+              cloneCall ="aa", 
+              chain = "both",
+              x.axis = "aaPBS_CD45", 
+              y.axis = "aCD3CD28_BEADS_CD45",
+              dot.size = "total",
+              graph = "proportion")
+
+print(gg_scatter)
+
+# Save
+pdf(file = paste0(path_r_figs, "/gg_scatterClonotype_aCD3CD28_BEADS-PBS_filtered.pdf"), width =7, height =5)    
+print(gg_scatter)    
+dev.off()   
+```
+
+```{r}
+df <- scatterClonotype(combined.TCR_filtered, 
+              cloneCall ="aa", 
+              chain = "both",
+              x.axis = "aaPBS_CD45", 
+              y.axis = "aCD3CD28_BEADS_CD45",
+              dot.size = "total",
+              graph = "proportion",
+              exportTable = TRUE
+              )
+
+df[df$class == "dual.expanded",]
+```
+
+```{r}
+pattern <- "*CAASDNYQLIW_.*|.*_CASSRANYEQYF*"
+matched_values <- grep(pattern, df$Var1, value = TRUE)
+print(matched_values)
+```
+```{r}
+df[df$Var1 == "CAASDNYQLIW_CASSRANYEQYF",]
+df[df$Var1 == "CAASGGSSGNKLIF_CASSRANYEQYF",]
+df[df$Var1 == "NA_CASSRANYEQYF",]
+```
+
+
+
+```{r tidy = FALSE}
+# c("aCD3CD28_BEADS_CD45", "BACT_CD45", "BACB_CD45", "PBS_CD45")
+gg_scatter <- scatterClonotype(combined.TCR_filtered, 
+              cloneCall ="aa", 
+              chain = "both",
+              x.axis = "aaPBS_CD45", 
+              y.axis = "BACT_CD45",
+              dot.size = "total",
+              graph = "proportion")
+
+print(gg_scatter)
+
+# Save
+pdf(file = paste0(path_r_figs, "/gg_scatterClonotype_BACT-PBS_filtered.pdf"), width =7, height =5)    
+print(gg_scatter)    
+dev.off()   
+```
+
+```{r}
+df <- scatterClonotype(combined.TCR_filtered, 
+              cloneCall ="aa", 
+              chain = "both",
+              x.axis = "aaPBS_CD45", 
+              y.axis = "BACT_CD45",
+              dot.size = "total",
+              graph = "proportion",
+              exportTable = TRUE
+              )
+
+df[df$class == "dual.expanded",]
+```
+```{r}
+pattern <- "*CAASDNYQLIW_.*|.*_CASSRANYEQYF*"
+matched_values <- grep(pattern, df$Var1, value = TRUE)
+print(matched_values)
+```
+
+```{r}
+df[df$Var1 == "CAASDNYQLIW_CASSRANYEQYF",]
+df[df$Var1 == "CAASDNYQLIW_NA",]
+df[df$Var1 == "CALWVSNTGYQNFYF_CASSRANYEQYF",]
+df[df$Var1 == "NA_CASSRANYEQYF",]
+```
+
+```{r tidy = FALSE}
+# c("aCD3CD28_BEADS_CD45", "BACT_CD45", "BACB_CD45", "PBS_CD45")
+gg_scatter <- scatterClonotype(combined.TCR_filtered, 
+              cloneCall ="aa", 
+              chain = "both",
+              x.axis = "aCD3CD28_BEADS_CD45", 
+              y.axis = "BACT_CD45",
+              dot.size = "total",
+              graph = "proportion")
+
+print(gg_scatter)
+
+# Save
+pdf(file = paste0(path_r_figs, "/gg_scatterClonotype_BACT-aCD3CD28_BEADS_filtered.pdf"), width =7, height =5)    
+print(gg_scatter)    
+dev.off()   
+```
+
+
+```{r}
+clonotype_scatter_filtered_df <- scatterClonotype(combined.TCR_filtered, 
+              cloneCall ="aa", 
+              chain = "both",
+              x.axis = "aCD3CD28_BEADS_CD45", 
+              y.axis = "BACT_CD45",
+              dot.size = "total",
+              graph = "proportion",
+              exportTable = TRUE
+              )
+
+# Exporting TCR dataset
+saveRDS(clonotype_scatter_filtered_df, file = paste0(path_r_objects, "/VEIGAEST_scRepertoire_combineTCR_scatterClonotype_filtered_df.rds"))
+write.csv(clonotype_scatter_filtered_df, file = paste0(path_r_tables, "/VEIGAEST_scRepertoire_combineTCR_scatterClonotype_filtered_df.csv"))
+```
+
+```{r}
+clonotype_scatter_filtered_df[clonotype_scatter_filtered_df$class == "dual.expanded",]
+```
+```{r}
+pattern <- "*CAASDNYQLIW_.*|.*_CASSRANYEQYF*"
+matched_values <- grep(pattern, clonotype_scatter_filtered_df$Var1, value = TRUE)
+print(matched_values)
+```
+```{r}
+clonotype_scatter_filtered_df[clonotype_scatter_filtered_df$Var1 == "CAASDNYQLIW_CASSRANYEQYF",]
+clonotype_scatter_filtered_df[clonotype_scatter_filtered_df$Var1 == "CAASGGSSGNKLIF_CASSRANYEQYF",]
+clonotype_scatter_filtered_df[clonotype_scatter_filtered_df$Var1 == "NA_CASSRANYEQYF",]
+clonotype_scatter_filtered_df[clonotype_scatter_filtered_df$Var1 == "CAASDNYQLIW_NA",]
+clonotype_scatter_filtered_df[clonotype_scatter_filtered_df$Var1 == "CALWVSNTGYQNFYF_CASSRANYEQYF",]
+```
+
+
+## Diversity metrics 
+```{r fig.width=15, fig.height=5}
+gg_diversity_metrics <- clonalDiversity(combined.TCR_filtered, 
+                cloneCall = "aa", 
+                x.axis = "sample", 
+                n.boots = 100)
+
+print(gg_diversity_metrics)
+
+# Save
+pdf(file = paste0(path_r_figs, "/gg_diversity_metrics_BacTcomparison_filtered.pdf"), width =15, height =5)    
+print(gg_diversity_metrics)    
+dev.off()  
+```
+
+
+
+# combineExpression
+
+We can add the clonal information to the single-cell object using `combineExpression()`. 
+
+**Importantly**, the major requirement for the attachment is matching contig cell barcodes and barcodes in the row names of the meta data of the Seurat or Single-Cell Experiment object. If these do not match, the attachment will fail. Based on ease, we suggest making changes to the single-cell object barcodes.
+
+Calculating cloneSize
+
+Part of `combineExpression()` is calculating the clonal frequency and proportion, placing each clone into groups called **cloneSize**. The default **cloneSize** argument uses the following bins: c(Rare = 1e-4, Small = 0.001, Medium = 0.01, Large = 0.1, Hyperexpanded = 1), which can be modified to include more/less bins or different names. 
+
+Clonal frequency and proportion is dependent on the repertoires being compared, which we can modify the calculation using the **group.by** parameter, such as grouping by the *Patient* variable from above. If **group.by** is not set, `combineExpression()` will calculate clonal frequency, proportion, and **cloneSize** as a function of individual sequencing runs. 
+
+In addition, **cloneSize** can use the frequency of clones when **proportion** = FALSE. Alternatively, if we want **cloneSize** to be based on the frequency of the clone, we can set **proportion** = FALSE and we will need to change the **cloneSize** bins to integers. If we have not inspected our clone data, setting the upper limit of the clonal frequency might be difficult - ```combineExpression()``` will automatically adjust the upper limit to fit the distribution of the frequencies.
+
+```{r tidy = FALSE}
+seurat_obj_combined <- combineExpression(combined.TCR, 
+                                         seurat_obj, 
+                         group.by = "sample",
+                         cloneCall="aa", 
+                         chain = "both",
+                         cloneTypes = c(1, 10, 50, 100, 500, 1000),
+                         proportion = FALSE
+                         )
+seurat_obj_combined$cloneType <- factor(x = seurat_obj_combined$cloneType,
+                                        levels = c(
+                                        " (0 < X <= 1)",
+                                        " (1 < X <= 10)",
+                                        " (10 < X <= 50)",
+                                        " (50 < X <= 100)",
+                                        " (100 < X <= 500)"
+                                        ))
+
+seurat_obj_combined
+```
+
+```{r}
+seurat_obj_combined$cell_types <- factor(x = seurat_obj_combined$cell_types,
+                                        levels = c(
+                      "Stem-like CD8 T cells",
+                      "Effector CD8 T cells",
+                      "Effector Memory CD8 T cells",
+                      "IFN-responder CD8 T cells",
+                      "Exhausted CD8 T cells",
+                      "Cycling CD8 T cells", 
+                      "Exhausted CD4 T cells",
+                      "Tregs", "Cycling Tregs", 
+                      "Th",
+                      "MAIT", 
+                      "NKT cells"
+                      ))
+
+table(seurat_obj_combined$cell_types, seurat_obj_combined$treatment)
+```
+
+```{r}
+### Save combined
+saveRDS(object = seurat_obj_combined,
+        file = paste0(path_r_objects, "/VEIGAEST_TLymphocytes_combined_GEX-TCR_BacT.rds"))
+#seurat_obj_combined <- readRDS(paste0(path_r_objects, "/VEIGAEST_TLymphocytes_combined_GEX-TCR_BacT.rds"))
+```
+
+```{r}
+seurat_obj_combined_df <- seurat_obj_combined@meta.data
+head(seurat_obj_combined_df)
+
+# Exporting metadata dataset
+saveRDS(seurat_obj_combined_df, file = paste0(path_r_objects, "/VEIGAEST_scRepertoire_Tcells-BacT_combined_GEX-TCR_metadata.rds"))
+write.csv(seurat_obj_combined_df, file = paste0(path_r_tables, "/VEIGAEST_scRepertoire_Tcells-BacT_combined_GEX-TCR_metadata.csv"))
+```
+
+
+```{r}
+OVA_TCR_list <- c("CAASDNYQLIW_CASSRANYEQYF", "CAASDNYQLIW_NA", "NA_CASSRANYEQYF")
+
+# Filter dataframe
+seurat_OVA_df <- seurat_obj_combined_df[seurat_obj_combined_df$CTaa %in% OVA_TCR_list, ]
+
+# Exporting metadata dataset
+saveRDS(seurat_OVA_df, file = paste0(path_r_objects, "/VEIGAEST_scRepertoire_Tcells-BacT_combined_OVAexpanded_GEX-TCR_metadata.rds"))
+write.csv(seurat_OVA_df, file = paste0(path_r_tables, "/VEIGAEST_scRepertoire_Tcells-BacT_combined_OVAexpanded_GEX-TCR_metadata.csv"))
+```
+
+```{r}
+table(seurat_OVA_df$treatment, seurat_OVA_df$CTaa)
+table(seurat_OVA_df$cell_types, seurat_OVA_df$CTaa)
+```
+
+# TCR analysis
+## TCR recovered & expanded
+
+```{r}
+Idents(seurat_obj_combined) <- "treatment"
+seurat_obj_combined_sub <- subset(seurat_obj_combined, idents = "PBS", invert = TRUE)
+seurat_obj_combined_sub$treatment <- as.factor(as.character(seurat_obj_combined_sub$treatment))
+seurat_obj_combined_sub$treatment <- factor(x = seurat_obj_combined_sub$treatment,
+                               levels = c("aCD3CD28_BEADS", "BACT"))
+Idents(seurat_obj_combined_sub) <- "cell_types"
+head(seurat_obj_combined_sub)
+```
+
+```{r}
+cells_color_palette <- c(
+                        # T Lymphocytes
+                        "Stem-like CD8 T cells" = "#89CFF0",
+                        "Effector Memory CD8 T cells" = "#1565C0",
+                        "Effector CD8 T cells" = "#1E90FF",
+                        "IFN-responder CD8 T cells"= "#003f88",
+                        "Exhausted CD8 T cells" = "#00BFFF",
+                        "Cycling CD8 T cells" = "#BFD7FF",
+                        "Exhausted CD4 T cells" = "#9C27B0", 
+                        "Tregs" = "#9D4EDD",
+                        "Cycling Tregs" = "#7B1FA2", 
+                        "Th"= "#D55AFF",
+                        "MAIT"= "#10002B", 
+                        "g/dv2-17 cells"= "#C2185B",
+                        "NKT cells"= "#F8C8DC"
+                          )
+```
+
+```{r fig.width=6, fig.height=5}
+# Paso 1: Calcular el total de células por tratamiento (incluyendo las NA)
+total_cells_by_treatment <- seurat_obj_combined@meta.data %>%
+  group_by(treatment) %>%
+  summarise(total_cells = n(), .groups = "drop")
+
+# Paso 2: Crear categorías para No TCR, Expanded y Singlet
+category_df <- seurat_obj_combined@meta.data %>%
+  group_by(treatment, CTaa) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(
+    category = case_when(
+      is.na(CTaa) ~ "No TCR Recovered",        # No TCR Recovered (NA)
+      count > 1  ~ "Expanded clone",           # Expanded Clone (count > 1)
+      count == 1 ~ "Singlet"                   # Singlet (count == 1)
+    )
+  ) %>%
+  select(-CTaa)  # Eliminar la columna CTaa
+
+# Paso 3: Contar el número total de células por categoría y tratamiento
+category_summary <- category_df %>%
+  group_by(treatment, category) %>%
+  summarise(total_count = sum(count), .groups = "drop")  # Total por categoría
+
+# Paso 4: Unir los datos de categoría con el total de células por tratamiento
+plot_data <- category_summary %>%
+  left_join(total_cells_by_treatment, by = "treatment") %>%
+  mutate(proportion = total_count / total_cells)  # Calcular la proporción
+
+plot_data$category <- as.factor(as.character(plot_data$category))
+plot_data$category <- factor(x = plot_data$category,
+                               levels = c("No TCR Recovered", "Singlet", "Expanded clone"))
+
+# Paso 5: Crear el gráfico de barras apiladas con proporciones en el eje Y
+gg_TCR_proportion <- ggplot(plot_data, aes(x = treatment, y = proportion, fill = category)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = c("No TCR Recovered" = "#E5E4E2",  # Gris para No TCR Recovered
+                               "Expanded clone" = "#696969",    # Rojo para Expanded Clone
+                               "Singlet" = "#8B8589")) +          # Azul para Singlet
+  labs(y = "Proportion of Cells", fill = "Category") +
+  theme_classic() +
+  theme(
+    strip.text = element_text(face = "bold")
+  ) +
+  # Agregar texto de los conteos absolutos encima de las barras apiladas
+  geom_text(aes(label = total_count), position = position_stack(vjust = 0.5), color = "black", size = 4)
+
+print(gg_TCR_proportion)
+
+# Save
+pdf(file = paste0(path_r_figs, "/gg_barplot_TCRproportion_filtered.pdf"), width =6, height =5)    
+print(gg_TCR_proportion)    
+dev.off()  
+```
+
+## TCR expanded
+
+```{r}
+# Filtrar los datos de solo las T cells
+filtered_df <- seurat_obj_combined@meta.data %>%
+  filter(CTaa != "NA") %>%
+  # Agrupar por tratamiento y CTaa
+  group_by(treatment, CTaa) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  filter(count != 1) # Eliminar los que tienen count = 1
+```
+
+```{r}
+pattern <- "*CAASDNYQLIW_.*|.*_CASSRANYEQYF*"
+matched_values <- grep(pattern, filtered_df$CTaa, value = TRUE)
+print(matched_values)
+```
+
+
+```{r fig.width=6, fig.height=5}
+# Crear categorías para No TCR, Expanded y Singlet
+filtered_df <- filtered_df %>%
+  mutate(category = case_when(
+    CTaa %in% c("CAASDNYQLIW_CASSRANYEQYF", "CAASDNYQLIW_NA", "NA_CASSRANYEQYF", "CALWVSNTGYQNFYF_CASSRANYEQYF") ~ CTaa,
+    TRUE ~ "Other clones"
+  ))
+
+# Contar el número total de células por categoría y tratamiento
+category_summary <- filtered_df %>%
+  group_by(treatment, category) %>%
+  summarise(total_count = sum(count), .groups = "drop")
+
+# Calcular el total de células por tratamiento (incluyendo las NA)
+total_cells_by_treatment <- filtered_df %>%
+  group_by(treatment) %>%
+  summarise(total_cells = sum(count), .groups = "drop")
+
+# Unir los datos de categoría con el total de células por tratamiento
+filtered_df <- category_summary %>%
+  left_join(total_cells_by_treatment, by = "treatment") %>%
+  mutate(proportion = total_count / total_cells)
+
+
+# Asignar colores personalizados
+display_palette <- c(
+  "CAASDNYQLIW_CASSRANYEQYF" = "#74546a",  # Azul
+  "CAASDNYQLIW_NA" = "#f67e7d",             # Naranja
+  "NA_CASSRANYEQYF" = "#ffb997",            # Verde
+  "Other clones" = "#E5E4E2",                # Gris
+  "CALWVSNTGYQNFYF_CASSRANYEQYF" = "yellow"
+)
+
+filtered_df$category <- as.factor(as.character(filtered_df$category))
+filtered_df$category <- factor(x = filtered_df$category,
+                               levels = c("Other clones", "NA_CASSRANYEQYF", "CAASDNYQLIW_NA", "CAASDNYQLIW_CASSRANYEQYF", "CALWVSNTGYQNFYF_CASSRANYEQYF"))
+
+# Crear el gráfico de barras apiladas con proporciones en el eje Y
+gg_expandedTCR_prop <- ggplot(filtered_df, aes(x = treatment, y = proportion, fill = category)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = display_palette) +
+  labs(y = "Proportion of Cells", fill = "Category") +
+  theme_classic() +
+  theme(
+    strip.text = element_text(face = "bold")
+  ) +
+  geom_text(aes(label = total_count), position = position_stack(vjust = 0.5), color = "black", size = 4)
+
+
+print(gg_expandedTCR_prop)
+
+# Save
+pdf(file = paste0(path_r_figs, "/gg_barplot_TCRexpanded_proportion_filtered.pdf"), width =6, height =5)    
+print(gg_expandedTCR_prop)    
+dev.off()  
+```
+## TCR recognizing-OVA
+
+```{r fig.width=14, fig.height=3}
+# Calcular las proporciones por tratamiento y faceta CTaa
+filtered_prop_df <- seurat_obj_combined@meta.data %>%
+  filter(CTaa %in% c("CAASDNYQLIW_CASSRANYEQYF", "CAASDNYQLIW_NA", "NA_CASSRANYEQYF")) %>%
+  group_by(treatment, CTaa, cell_types) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(treatment, CTaa) %>%
+  mutate(proportion = count / sum(count)) %>%
+  ungroup()
+
+filtered_prop_df$treatment <- as.factor(as.character(filtered_prop_df$treatment))
+filtered_prop_df$treatment <- factor(x = filtered_prop_df$treatment,
+                               levels = c("BACT", "aCD3CD28_BEADS"))
+
+# Crear el gráfico de barras apilado con proporciones y la paleta personalizada
+gg_OVATCR_count <- ggplot(filtered_prop_df, aes(x = count, fill = cell_types, y = treatment)) +
+  geom_bar(stat = "identity", position = "stack") +  # Usa 'stat = "identity"' para usar las proporciones ya calculadas
+  facet_wrap(~ CTaa, scales = "free_x") +  # Ejes Y independientes por faceta
+  scale_fill_manual(values = cells_color_palette) +  # Paleta personalizada
+  labs(x = "Treatment", y = "Proportion", fill = "Cell Types") +
+  theme_classic() +
+  theme(
+    strip.text = element_text(face = "bold")
+  )
+
+print(gg_OVATCR_count)
+
+# Save
+pdf(file = paste0(path_r_figs, "/gg_barplot_OVATCR_count_filtered.pdf"), width =14, height =3)    
+print(gg_OVATCR_count)    
+dev.off()  
+
+
+# Crear el gráfico de barras apilado con proporciones y la paleta personalizada
+gg_OVATCR_prop <- ggplot(filtered_prop_df, aes(x = proportion, fill = cell_types, y = treatment)) +
+  geom_bar(stat = "identity", position = "stack") +  # Usa 'stat = "identity"' para usar las proporciones ya calculadas
+  facet_wrap(~ CTaa, scales = "free_x") +  # Ejes Y independientes por faceta
+  scale_fill_manual(values = cells_color_palette) +  # Paleta personalizada
+  labs(x = "Treatment", y = "Proportion", fill = "Cell Types") +
+  theme_classic() +
+  theme(
+    strip.text = element_text(face = "bold")
+  )
+
+print(gg_OVATCR_prop)
+
+# Save
+pdf(file = paste0(path_r_figs, "/gg_barplot_OVATCR_prop_filtered.pdf"), width =14, height =3)    
+print(gg_OVATCR_prop)    
+dev.off()  
+
+```
+
+## Profile CD8+ Effector cells by pseudobulking
+```{r}
+Idents(seurat_obj_combined_sub) <- "cell_types"
+seurat_obj_combined_sub <- subset(seurat_obj_combined_sub, idents = c("Stem-like CD8 T cells", "Exhausted CD4 T cells",
+                      "Tregs", "Cycling Tregs", 
+                      "Th",
+                      "MAIT", 
+                      "NKT cells"), invert=TRUE)
+Idents(seurat_obj_combined_sub) <- "treatment"
+seurat_obj_combined_sub
+
+seurat_obj_combined_sub$cell_types <- factor(x = seurat_obj_combined_sub$cell_types,
+                                        levels = c(
+                      "Effector CD8 T cells",
+                      "Effector Memory CD8 T cells",
+                      "IFN-responder CD8 T cells",
+                      "Exhausted CD8 T cells",
+                      "Cycling CD8 T cells"
+                      ))
+seurat_obj_combined_sub$treatment <- factor(x = seurat_obj_combined_sub$treatment,
+                                        levels = c("aCD3CD28_BEADS", "BACT"))
+
+table(seurat_obj_combined_sub$cell_types, seurat_obj_combined_sub$treatment)
+```
+
+
+```{r fig.width=10, fig.height=6}
+seurat_obj_combined_sub
+
+VlnPlot(seurat_obj_combined_sub,
+        features = c("Gzmb"),
+        group.by = "cell_types",
+        split.by = "treatment")
+```
+
+### Signatures
+
+```{r}
+bulkRNAseq_gene_signatures <- list(
+  "cell_cycle_arrest" = c("Cdkn1b", "Ccng2", "Cdkn2c", "Cdkn2d", "Cdkn1a", "Cdkn2b"),
+  
+  "cell_cycle_progression" = c("Mcm5", "Cdk4", "Mcm6", "Ccnb1", "Mcm2", "Mcm4", "E2f1", "Cdk2", "Mcm3", "Mcm7", 
+                               "Ccnd2", "Cdk8", "Cdk11b", "Ccnd3", "Tfdp1", "Cdk16", "Cdk5", "Cdk19", "E2f2", "Ccnb2", "Cdk1"),
+  
+  "apoptosis" = c("Pmaip1", "Bak1", "Bax", "Bid", "Cflar", "Fas", "Bnip3", "Bcl2l11", "Bbc3"),
+  
+  "cell_survival" = c("Birc5", "Sirt3", "Traf5", "Bcl2a1d", "Bcl2a1b", "Id2", "Traf2", "Bcl2l1", "Hmox1", "Tnfrsf4", "Bcl2", "Tnfrsf9", "Traf3"),
+  
+  "stemLike_phenotype" = c("Bhlhe40", "Myb", "Cxcl10", "Il7r", "Ccr7", "Ikzf2", "Foxo1", "Slamf6", "Lef1",
+                           "Bcl6", "Bach2", "Klf3", "Tcf7", "S1pr1", "Id3", "Klf2", "Sell"),
+  
+  "quiescence" = c("Myb", "Il7r", "Ccr7", "Ikzf2", "Foxo1", "Slamf6", "Lef1", "Bcl6", "Bach2", "Klf3", "Tcf7", "S1pr1", "Id3", "Klf2", "Sell"),
+  
+  "exhaustion" = c("Nfatc1", "Cd7", "Ctla4", "Cd101", "Pdcd1", "Nfil3", "Tox", "Xbp1", "Nr4a3",
+                   "Nr4a1", "Nr4a2", "Cd244a", "Havcr2", "Entpd1", "Cd160", "Cd38"),
+  
+  "Tc1_phenotype" = c("Fasl", "Gzmb", "Il2ra", "Ccl3", "Tnf", "Ifng", "Icos", "Prf1", "Cd69", "Prdm1", "Irf4", "Ccl4", "Tnfrsf8", 
+                      "Gzmg", "Gzmd", "Gzme", "Gzmf", "Tbx21", "Runx3", "Gzma", "Gzmk", "Eomes", "Batf", "Gzmc", "Itgal", "Cd44", "Ccl5"),
+  
+  "glucose_metabolism" = c("Hk2", "Pgm2", "Pdk3", "Eno3", "Bpgm", "Pdk2", "Ldhb", "Pgm2l1", "Pgam2", "Ldha", "Pfkp", 
+                           "Eno1", "Eno1b", "Slc2a1", "Scl16a3", "Pgam1", "Tpi1", "Pkm", "Hif1a", "Pfkm", "Aldoa", "Pfkfb3", 
+                           "Ipfk2", "Acss1", "Acss2", "Aldoc", "Gpi1", "Pgk1", "Pygl", "Slc2a3"),
+  
+  "mitochondrial_metabolism" = c("Slc25a23", "Ndufaf1", "Nrf1", "Ndufb9", "Atp5o", "Ndufa9", "Ndufs8", "Fabp5", "Atp5b", "Ndufa2",
+                                 "Uqcr10", "Ndufa5", "Ptpmt1", "Ndufb7", "Uqcrq", "Ndufv1", "Cox6b2", "Ndufa4", "Cox5a", "Atp5k", 
+                                 "Cox7b", "Atp5l", "Atp5g3", "Ndufa12", "Ndufs6", "Ndufb3", "Ndufa1", "Emc8", "Cox6a1", "Mtch2",
+                                 "Sdhb", "Ndufaf2", "Ndufb6", "Ndufs1", "Atpaf2", "Atpif1", "Ndufaf4")
+)
+```
+
+```{r}
+# Pseudobulk function (equivalent to DecoupleR)
+get_pseudobulk <- function(seurat_obj, sample_col = "individual", groups_col = "cell_type", min_cells = 0, min_counts = 0) {
+  # Extract raw integer counts
+  counts_matrix <- GetAssayData(seurat_obj, slot = "counts")
+  # Extract metadata
+  metadata <- seurat_obj@meta.data
+  
+  # Create a combined group identifier
+  metadata$group_id <- paste(metadata[[sample_col]], metadata[[groups_col]], sep = "_")
+  
+  # Group cells by the combined identifier
+  cell_groups <- split(rownames(metadata), metadata$group_id)
+  # Aggregate counts by summing across all cells in each group
+  pseudobulk_counts <- sapply(cell_groups, function(cells) {
+    if (length(cells) >= min_cells) {
+      summed_counts <- Matrix::rowSums(counts_matrix[, cells, drop = FALSE])
+      if (sum(summed_counts) >= min_counts) {
+        return(summed_counts)
+      }
+    }
+    return(rep(0, nrow(counts_matrix)))
+  })
+  # Convert to matrix format
+  pseudobulk_counts <- as.matrix(pseudobulk_counts)
+  # Remove empty columns
+  valid_cols <- colSums(pseudobulk_counts) > 0
+  pseudobulk_counts <- pseudobulk_counts[, valid_cols, drop = FALSE]
+  
+  # Create sample-level metadata
+  sample_metadata <- unique(metadata[, c(sample_col, groups_col), drop = FALSE])
+  sample_metadata$group_id <- paste(sample_metadata[[sample_col]], sample_metadata[[groups_col]], sep = "_")
+  rownames(sample_metadata) <- sample_metadata$group_id
+  # Filter metadata to match valid columns
+  sample_metadata <- sample_metadata[valid_cols, , drop = FALSE]
+  
+  # Create a new Seurat object with pseudobulk data
+  pseudobulk_seurat <- CreateSeuratObject(
+    counts = pseudobulk_counts,
+    meta.data = sample_metadata
+  )
+  
+  return(pseudobulk_seurat)
+}
+```
+
+```{r fig.width=10, fig.height=4}
+# Pseudobulk
+seurat_obj_T_pseudo <- get_pseudobulk(seurat_obj_combined_sub, sample_col = "treatment", groups_col = "cell_types", min_cells = 0, min_counts = 0)
+seurat_obj_T_pseudo
+
+Tcell_types_order <- c("Effector CD8 T cells",
+                      "Effector Memory CD8 T cells",
+                      "IFN-responder CD8 T cells",
+                      "Exhausted CD8 T cells",
+                      "Cycling CD8 T cells"
+                      )
+
+seurat_obj_T_pseudo$cell_types <- factor(x = seurat_obj_T_pseudo$cell_types,
+                                        levels = Tcell_types_order)
+
+# Normalization
+seurat_obj_T_pseudo <- NormalizeData(seurat_obj_T_pseudo, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+``` {r}
+# UCELL GENE SIGNATURE SCORE
+library(UCell)
+# UCELL GENE SIGNATURE SCORE
+## Using positive and negative gene sets, GENE+ or GENE-
+seurat_obj_T_pseudo <- AddModuleScore_UCell(seurat_obj_T_pseudo, 
+                                   features=bulkRNAseq_gene_signatures, name=NULL)
+head(seurat_obj_T_pseudo@meta.data)
+```
+
+
+```{r fig.width=16, fig.height=3}
+for (gene_sig in names(bulkRNAseq_gene_signatures)) {
+  gg_gene_sig <- DotPlot(seurat_obj_T_pseudo,
+        features = bulkRNAseq_gene_signatures[[gene_sig]],
+        group.by = "treatment",
+        #split.by = "cell_types",
+        scale = FALSE,
+        cols = "RdBu",
+        dot.scale = 5
+        ) + 
+    labs(title = gene_sig) +
+   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+  print(gg_gene_sig)
+}
+```
+
+```{r}
+gene_signatures_scores_df <- seurat_obj_T_pseudo@meta.data[, c("cell_types", "treatment", names(bulkRNAseq_gene_signatures))]
+
+gene_signatures_scores_df$cell_types <- factor(gene_signatures_scores_df$cell_types, levels = Tcell_types_order)
+gene_signatures_scores_df <- gene_signatures_scores_df %>%
+  arrange(cell_types, treatment)
+
+gene_signatures_scores_df$condition <- paste0(gene_signatures_scores_df$cell_types, "__", gene_signatures_scores_df$treatment)
+gene_signatures_scores_df$cell_types <- NULL
+gene_signatures_scores_df$treatment <- NULL
+rownames(gene_signatures_scores_df) <- gene_signatures_scores_df$condition
+gene_signatures_scores_df$condition <- NULL
+gene_signatures_scores_df
+```
+
+```{r fig.height=6, fig.width=7}
+gg_heatmap_signatures <- pheatmap::pheatmap(t(gene_signatures_scores_df), 
+         scale = "row",
+         cluster_rows = FALSE, # Cluster rows
+         cluster_cols = FALSE, # Cluster columns
+         show_rownames = TRUE, # Show row names
+         show_colnames = TRUE, # Show column names
+         color = colorRampPalette(c("blue", "white", "red"))(100), # Color scale
+         border_color = "white",
+         gaps_row = c(1,2,3,4),
+         gaps_col = seq(2, ncol(gene_signatures_scores_df), by = 2),
+         main = "Bulk RNA-seq Gene Signatures")
+print(gg_heatmap_signatures)
+```
+
+
+```{r fig.height=6, fig.width=7}
+gg_heatmap_signatures <- pheatmap::pheatmap(t(gene_signatures_scores_df[c("cell_cycle_progression",  "exhaustion", "glucose_metabolism", "mitochondrial_metabolism")]), 
+         scale = "row",
+         cluster_rows = FALSE, # Cluster rows
+         cluster_cols = FALSE, # Cluster columns
+         show_rownames = TRUE, # Show row names
+         show_colnames = TRUE, # Show column names
+         color = colorRampPalette(c("blue", "white", "red"))(100), # Color scale
+         border_color = "white",
+         gaps_row = c(1,2,3,4),
+         gaps_col = seq(2, ncol(gene_signatures_scores_df), by = 2),
+         main = "Bulk RNA-seq Gene Signatures")
+print(gg_heatmap_signatures)
+
+# Save
+pdf(file = paste0(path_r_figs, "/gg_heatmap_signaturesCD8.pdf"), width =7, height =6)    
+print(gg_heatmap_signatures)    
+dev.off()
+```
+
+### Genes
+```{r fig.width=12, fig.height=6}
+DotPlot(seurat_obj_combined_sub,
+        features = c("Gzmb", "Tox", "Tnfrsf9"
+                     ),
+        group.by = "cell_types",
+        split.by = "treatment",
+        scale = TRUE,
+        cols = "YlGnBu",
+        dot.scale = 10
+        ) + 
+   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+
+### Session Info
+
+```{r}
+sessionInfo()
+```
+

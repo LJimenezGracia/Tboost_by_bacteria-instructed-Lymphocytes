@@ -1,0 +1,424 @@
+---
+title: "TCR quality control"
+author: "Laura Jiménez Gracia"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+
+#library(BiocStyle)
+#library(scater)
+library(tidyverse)
+library(Seurat)
+library(scRepertoire)
+```
+
+scRepertoire is designed to take filter contig outputs from the 10x Genomics Cell Ranger pipeline, process that data to assign clonotype based on two TCR chains and analyze the clonotype dynamics. The latter can be separated into 1) clonotype-only analysis functions, such as unique clonotypes or clonal space quantification, and 2) interaction with mRNA expression data using Seurat or SingleCellExperiment packages.
+
+## Parameters
+Here we will define and load objects and functions that will be used throughout the document.
+```{r}
+# Paths
+path_project_metadata <- here::here("01_cellranger_mapping/data/VEIGAEST_metadata.csv")
+path_cellranger_data <- here::here("01_cellranger_mapping/subprojects/VEIGAEST_01_02/jobs")
+
+path_r_objects <- here::here("05_TCR_analysis/results/R_objects")
+path_r_figs <- here::here("05_TCR_analysis/results/figs")
+path_r_tables <- here::here("05_TCR_analysis/results/tables")
+
+# Functions
+#source(here::here("bin/utils.R"))
+```
+
+## Load data
+The data used in this Rmarkdown document comes from **VEIGAEST** dataset.
+```{r}
+# Load all metadata information
+metadata <- read.csv(path_project_metadata)
+
+# Merging metadata_all tables
+metadata <- metadata %>% filter(type == "cDNA")
+
+print("Libraries metadata")
+DT::datatable(metadata, options = list(scrollX = TRUE))
+```
+
+### What data to load into scRepertoire?
+scRepertoire functions using the **filtered_contig_annotations.csv** output from the 10x Genomics Cell Ranger. This file is located in the ./outs/ directory of the VDJ alignment folder. 
+
+```{r, eval=FALSE}
+treatment_list <- metadata$treatment
+gem_id_list <- metadata$gem_id
+
+# Create Seurat object list
+contig_list <- c()
+
+contig_list <- purrr::map(gem_id_list, function(gem_id) {
+  path_filtered_matrix <- here::here(
+    paste(path_cellranger_data, gem_id, gem_id, "outs/per_sample_outs", gem_id, "vdj_t/filtered_contig_annotations.csv", sep = "/"))
+  tcr_csv <- read.csv(path_filtered_matrix, stringsAsFactors = F)
+  tcr_csv$sample <- NULL
+  tcr_csv
+})
+names(contig_list) <- treatment_list
+
+head(contig_list)
+```
+
+
+# Combining TCR Contigs into Clones
+
+**input.data**  
+* List of *filtered_contig_annotations.csv* data frames from the 10x Cell Ranger.  
+
+**samples** and **ID**  
+* Grouping variables for downstream analysis and will be added as prefixes to 
+prevent issues with duplicate barcodes **(optional)**.  
+
+**removeNA**  
+* TRUE - Filter to remove any cell barcode with an NA value in at least one of the chains.  
+* FALSE - Include and incorporate cells with 1 NA value **(default)**.   
+
+**removeMulti**  
+* TRUE - Filter to remove any cell barcode with more than 2 immune receptor chains.  
+* FALSE - Include and incorporate cells with > 2 chains **(default)**.  
+
+**filterMulti**  
+* TRUE - Isolate the top 2 expressed chains in cell barcodes with multiple chains.  
+* FALSE - Include and incorporate cells with > 2 chains **(default)**.  
+
+The output of `combineTCR()` will be a list of contig data frames that will be reduced to the reads associated with a single cell barcode. It will also combine the multiple reads into clone calls by either the nucleotide sequence (**CTnt**), amino acid sequence (**CTaa**), the VDJC gene sequence (**CTgene**), or the combination of the nucleotide and gene sequence (**CTstrict**).
+
+```{r tidy = FALSE}
+combined.TCR <- combineTCR(contig_list, 
+                           samples = gem_id_list,
+                           removeNA = FALSE, 
+                           removeMulti = FALSE, 
+                           filterMulti = FALSE)
+
+head(combined.TCR[[1]])
+```
+
+# Exporting TCR dataset
+```{r, eval = FALSE, tidy = FALSE}
+saveRDS(combined.TCR, file = paste0(path_r_objects, "/VEIGAEST_scRepertoire_combineTCR_ContigsClones_full.rds"))
+```
+
+# Basic Clonal Visualizations
+
+**cloneCall**  
+* "gene" - use the VDJC genes comprising the TCR/Ig  
+* "nt" - use the nucleotide sequence of the CDR3 region  
+* "aa" - use the amino acid sequence of the CDR3 region  
+* "strict" - use the VDJC genes comprising the TCR + the nucleotide sequence of the CDR3 region. This is the [proper definition of clonotype](https://www.ncbi.nlm.nih.gov/pubmed/19568742). For ```combineBCR()``` strict refers to the edit distance clusters + Vgene of the Ig. 
+
+It is important to note that the clonotype is called using essentially the combination of genes or nt/aa CDR3 sequences for both loci. As of this implementation of scRepertoire, clonotype calling is not incorporating small variations within the CDR3 sequences. As such the **gene** approach will be the most sensitive, while the use of **nt** or **aa** is moderately so, and the most specific for clonotypes being **strict**. Additionally, the clonotype call is trying to incorporate both loci, *i.e.*, both **TCRA** and **TCRB** chains and if a single cell barcode has multiple sequences identified (*i.e.*, 2 TCRA chains expressed in one cell). Using the 10x approach, there is a subset of barcodes that only return one of the immune receptor chains. The unreturned chain is assigned an **NA** value.
+
+Within each of the general analysis functions, there is the ability to export the data frame used to create the visualization. To get the exported values, use **exportTable** = TRUE. It will return the data frame used to make the graph, instead of the visual output. 
+The other option here is to be able to define the visualization by data classes. Here we used the *combineTCR()* to define the **ID** variable as part of the naming structure. We can the **group.by** to specifically use a column in the data set to organize the visualization.
+
+## Quantify Clonotypes
+
+The first function to explore the clonotypes is `quantContig()` to return the total or relative numbers of unique clonotypes. 
+
+**scale**  
+* TRUE - relative percent of unique clonotypes scaled by total size of the size of the clonotype repertoire  
+* FALSE - Report the total number of unique clonotypes  
+
+**chain**  
++ "both" for combined chain visualization  
++ "TRA", "TRB", "TRD", "TRG", "IGH" or "IGL" to select single chain
+
+```{r fig.width=10, fig.height=5}
+quantContig(combined.TCR, 
+            cloneCall="aa", 
+            chain = "both", 
+            scale = FALSE)
+```
+
+Another option here is to be able to define the visualization by data classes. Here, we used the `combineTCR()` list to define the **Type** variable as part of the naming structure. We can use the **group.by** to specifically use a column in the data set to organize the visualization.
+
+```{r fig.width=10, fig.height=5}
+quantContig(combined.TCR, 
+            cloneCall="aa", 
+            chain = "both", 
+            scale = TRUE)
+```
+
+
+## clonalAbundance
+
+We can also examine the relative distribution of clones by abundance. Here `clonalAbundance()` will produce a line graph with a total number of clones by the number of instances within the sample or run. Like above, we can also group.by this by vectors within the contig object using the **group.by** variable in the function.
+
+```{r fig.width=10, fig.height=5}
+abundanceContig(combined.TCR, 
+                cloneCall = "aa",
+                chain = "both", 
+                scale = FALSE)
+```
+
+`clonalAbundance()` output can also be converted into a density plot, which may allow for better comparisons between different repertoire sizes, by setting **scale** = TRUE. 
+```{r fig.width=10, fig.height=5}
+abundanceContig(combined.TCR, 
+                cloneCall = "aa", 
+                chain = "both", 
+                scale = TRUE)
+```
+
+
+## Length of Clonotypes
+
+We can look at the length distribution of the CDR3 sequences by calling the `lengtheContig()` function. Importantly, unlike the other basic visualizations, the **cloneCall** can only be "nt" or "aa". Due to the method of calling clonotypes as outlined above, the length should reveal a multimodal curve, this is a product of using the **NA** for the unreturned chain sequence and multiple chains within a single barcode. 
+
+*chain*  
++ "both" for combined chain visualization  
++ "TRA", "TRB", "TRD", "TRG", "IGH" or "IGL" to select single chain  
+
+```{r fig.width=10, fig.height=5}
+lengthContig(combined.TCR, 
+                cloneCall = "aa", 
+                chain = "both") 
+
+lengthContig(combined.TCR,
+             cloneCall = "aa", 
+             chain = "both", 
+             scale = TRUE) 
+```
+
+
+# Visualizing Clonal Dynamics
+
+## clonalHomeostasis
+
+By examining the clonal space, we effectively look at the relative space occupied by clones at specific proportions. Another way to think about this would be to think of the total immune receptor sequencing run as a measuring cup. In this cup, we will fill liquids of different viscosity - or different numbers of clonal proportions. Clonal space homeostasis asks what percentage of the cup is filled by clones in distinct proportions (or liquids of different viscosity, to extend the analogy). The proportional cut points are set under the **cloneTypes** variable in the function and can be adjusted.
+
+**cloneTypes**  
+
+* Rare = 0.0001  
+* Small = 0.001  
+* Medium = 0.01  
+* Large = 0.1  
+* Hyperexpanded = 1  
+
+```{r fig.width=10, fig.height=5}
+clonalHomeostasis(combined.TCR, 
+                  cloneTypes = c(Rare = 0.001, Small = 0.01, Medium = 0.05, Large = 0.1, Hyperexpanded = 0.25),
+                  cloneCall = "aa",
+                  chain = "both")
+```
+
+## Clonal Proportion
+
+Like clonal space homeostasis above, clonal proportion acts to place clones into separate bins. The key difference is instead of looking at the relative proportion of the clone to the total, the `clonalProportion()` function will rank the clones by total number and place them into bins. 
+
+The **split** represents ranking of clonotypes by copy or frequency of occurrence, meaning 1:10 are the top 10 clonotypes in each sample. The default bins are under the **split** variable in the function and can be adjusted, but at baseline they are as follows. 
+ 
+**split**  
+* 10  
+* 100  
+* 1000  
+* 10000 
+* 30000 
+* 100000 
+
+```{r fig.width=10, fig.height=5}
+clonalProportion(combined.TCR, 
+                 cloneCall = "aa",
+                 chain = "both",
+                 split = c(1, 10, 50, 100, 500, 1000)) 
+```
+
+
+# Summarizing Repertoires
+
+## vizGenes
+
+Last of the basic analysis visualizations is the relative usage of genes of the TCR or BCR, using `vizGenes()`. 
+
+**gene**  
++  "V"  
++  "D"  
++  "J"  
++  "C"  
+
+**chain**
++  "TRB"  
++  "TRA"  
++  "TRG"  
++  "TRD" 
++  "IGH"  
++  "IGL"  
+
+**plot**  
++ "bar" for a bar chart  
++ "heatmap" for a heatmap  
+
+**y.axis**  
+Variable to separate the counts along the y-axis. If not specified
+the default is to separate by the list element names.
+
+**scale**  
++ TRUE to scale the graph by number of genes per sample  
++ FALSE to report raw numbers  
+
+**order**  
++ "gene" to order by gene name  
++ "variance" to order by variance between the separate variable categories  
+
+```{r fig.width=10, fig.height=6, tidy = FALSE}
+vizGenes(combined.TCR, 
+         chain = "TRA",
+         plot = "bar",
+         scale = TRUE)
+
+vizGenes(combined.TCR, 
+         chain = "TRB",
+         plot = "bar",
+         scale = TRUE)
+```
+
+```{r fig.width=8, fig.height=2, tidy = FALSE}
+vizGenes(combined.TCR, 
+         chain = "TRA",
+         plot = "heatmap",
+         scale = TRUE)
+
+vizGenes(combined.TCR, 
+         chain = "TRB",
+         plot = "heatmap",
+         scale = TRUE)
+```
+
+## Compare Clonotypes
+
+We can also look at clonotypes between samples and changes in dynamics by using the `compareClonotypes()` function.
+
+**samples**  
+* Can be used to isolate specific samples based on the name of the list element
+
+**graph**  
+* "alluvial" - graph imaged below  
+* "area" - graph by area of the respective clonotype  
+
+**number**  
+* The top number of clonotypes to graph, this will be calculated based on the frequency of the individual sample. This can also be left blank.  
+
+**clonotypes**  
+* Can be used to isolate specific clonotype sequences, ensure the call matches the sequences you would like to visualize.  
+
+```{r fig.width=16, fig.height=7, tidy = FALSE}
+compareClonotypes(combined.TCR, 
+                  numbers = 10, 
+                  samples = c("PBS_CD45", "BACB_CD45","BACT_CD45","aCD3CD28_BEADS_CD45"),
+                  cloneCall="aa",
+                  chain = "both", 
+                  graph = "alluvial")
+```
+```{r}
+compareClonotypes(combined.TCR, 
+                  numbers = 10, 
+                  samples = c("PBS_CD45", "BACB_CD45","BACT_CD45","aCD3CD28_BEADS_CD45"),
+                  cloneCall="aa",
+                  chain = "both", 
+                  graph = "alluvial",
+                  exportTable = TRUE)
+```
+
+
+
+# Comparing Clonal Diversity and Overlap
+
+## clonalScatter
+
+```clonalScatter()``` will organize two repertoires, quantify the relative clone sizes, and produce a scatter plot comparing the two samples. 
+
+**x.axis** and **y.axis** 
+
+* Names of the list element to place on the x-axis and y-axis - so for example *"P18B"* and *"P18L"* 
+
+**dot.size**  
+
+* "total" to display the total number of clones between the x- and y-axis  
+* Name of the list element to use for size calculation  
+ 
+**graph**  
+
+* "proportion" for the relative proportion the clone represents across all clones  
+* "count" for the total count of clones by sample  
+
+```{r tidy = FALSE}
+# c("aCD3CD28_BEADS_CD45", "BACT_CD45", "BACB_CD45", "PBS_CD45")
+scatterClonotype(combined.TCR, 
+              cloneCall ="aa", 
+              chain = "both",
+              x.axis = "aCD3CD28_BEADS_CD45", 
+              y.axis = "BACT_CD45",
+              dot.size = "total",
+              graph = "proportion")
+
+scatterClonotype(combined.TCR, 
+              cloneCall ="aa", 
+              chain = "both",
+              x.axis = "aCD3CD28_BEADS_CD45", 
+              y.axis = "BACB_CD45",
+              dot.size = "total",
+              graph = "proportion")
+
+scatterClonotype(combined.TCR, 
+              cloneCall ="aa", 
+              chain = "both",
+              x.axis = "BACT_CD45", 
+              y.axis = "BACB_CD45",
+              dot.size = "total",
+              graph = "proportion")
+```
+
+
+## Diversity Analysis
+
+Diversity can also be measured for samples or by other variables. Diversity is calculated using five metrics: 1) Shannon, 2) inverse Simpson, 3) Chao1, and 4) Abundance-based Coverage Estimator (ACE), and 5) inverse Pielou. With the former two generally used to estimate baseline diversity and Chao/ACE indices used to estimate the richness of the samples. New implementation of this function include downsampling with 100 boot straps (**n.boots**) using the minimum number of unique clonotypes, as a more robust diversity estimate. To get a table of the bootstrapped values, set **return.boots** = TRUE.
+
+As a default, ```clonalDiversity()``` will return all the metrics calculated - **"shannon"**, **"inv.simpson"**, **"norm.entropy"**, **"gini.simpson"**, **"chao1"**, and **"ACE"**. Selecting a single or a subset of these methods using the **metrics** parameter.
+
+```{r  fig.width=12}
+clonalDiversity(combined.TCR, 
+                cloneCall = "aa", 
+                group.by = "sample", 
+                n.boots = 100)
+```
+
+## clonalOverlap
+
+If you are interested in measures of similarity between the samples loaded into scRepertoire, using `clonalOverlap()` can assist in the visualization.
+
+The underlying `clonalOverlap()` calculation varies by the **method** parameter, more information on the exact calculations are available in the manual.
+
+**method**
+
+* "overlap" - overlap coefficient
+* "morisita" - Morisita's overlap index
+* "jaccard" - Jaccard index
+* "cosine" - cosine similarity
+* "raw" - exact number of overlapping clones
+
+```{r}
+clonalOverlap(combined.TCR,
+              cloneCall = "aa",
+              chain = "both",
+              method = "jaccard"
+              )
+```
+
+
+### Session Info
+```{r}
+sessionInfo()
+```
+
